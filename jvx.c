@@ -8,7 +8,7 @@
  *
  * Compile with:
  *
- *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jpeg_viewer_batch jpegviewer10.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm 
+ *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm
  *
  * Run like this:
  *
