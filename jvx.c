@@ -1493,10 +1493,10 @@ void process_command_line_args(int argc, char **argv)
 		{"action7", required_argument, 0, '7'},
 		{"action8", required_argument, 0, '8'},
 		{"action9", required_argument, 0, '9'},
-		{"draw-filename",   required_argument, 0, 'd'},
-		{"memory-limit",    required_argument, 0, 'm'},
-		{"readahead-bytes", required_argument, 0, 'r'},
-		{"slideshow-loop",  required_argument, 0, 's'},
+		{"draw-filename",   no_argument,	0, 'd'},
+		{"memory-limit",    required_argument,	0, 'm'},
+		{"readahead-bytes", required_argument,	0, 'r'},
+		{"slideshow-loop",  no_argument,	0, 's'},
 		{0, 0, 0, 0}
 	};
 
