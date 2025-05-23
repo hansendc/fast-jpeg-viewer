@@ -147,6 +147,7 @@ typedef struct {
 	image_info_t *images;
 	int image_count;
 	int current_index;
+	int last_delta;
 	int direction;
 	int big_skip;
 	int nr_rendered;
@@ -887,8 +888,12 @@ static int get_future_image_index(int nr_to_advance)
 	// Bound it in case the request is huge:
 	nr_to_advance %= app_state.image_count;
 
+	int direction = 1;
+	if (app_state.last_delta < 0)
+		direction = -1;
+
 	image_nr = app_state.current_index;
-	image_nr += nr_to_advance * app_state.direction;
+	image_nr += nr_to_advance * direction;
 	// If it ends up negative, bring it back positive:
 	if (image_nr < 0)
 		image_nr += app_state.image_count;
@@ -937,7 +942,7 @@ static void img_try_readahead(image_info_t *img)
 
 	readahead(fd, 0, file_size);
 	img->readahead_performed = now_ms();
-	log_debug2("Readahead %s (%ld bytes) direction: %d", img->filename, file_size, app_state.direction);
+	log_debug2("Readahead %s (%ld bytes) last delta: %d", img->filename, file_size, app_state.last_delta);
 
 	lock_image(img);
 	open_and_map_img(img);
@@ -957,7 +962,7 @@ static void *readahead_once(void *arg) {
 	// First, assume that the user will skip through the images sequentially,
 	// one at a time. Read ahead enough to keep all the decode threads busy.
 	for (int i = 0; i < app_state.num_decode_threads * 4; i++) {
-		image_info_t *img = get_future_image(i);
+		image_info_t *img = get_future_image(i * app_state.last_delta);
 		// Did it wrap around?
 		if (i && img == first_img) {
 			log_debug("wrap @ %d", i);
@@ -972,13 +977,11 @@ static void *readahead_once(void *arg) {
 		}
 	}
 
-	// Then, do a (normally) smaller readahead assuming that the user will
-	// skip (with page-up/down) twice.
+	// Then, do a (normally) smaller readahead assuming that
+	// the user will skip (with page-up/down) at least once.
 	int extra_readaheads[] = {
-			 app_state.big_skip, 
+			 app_state.big_skip,
 			-app_state.big_skip,
-			 app_state.big_skip * 2, 
-			-app_state.big_skip * 2,
 	};
 	for (int j = 0; j < ARRAY_SIZE(extra_readaheads); j++ ) {
 		image_info_t *img = get_future_image(j);
@@ -1338,12 +1341,9 @@ bool process_keypress(void)
 		if (mod & KMOD_ALT)
 			delta *= 8;
 
+		app_state.last_delta = delta;
 		app_state.current_index = (app_state.current_index + delta + app_state.image_count) % app_state.image_count;
 		log_debug2("keypress: delta: %d app_state.current_index: %d", delta, app_state.current_index);
-		if (delta >= 0)
-			app_state.direction = 1;
-		if (delta < 0)
-			app_state.direction = -1;
 	}
 
 	// Report if a keypress caused the app_state.current_index to move:
@@ -1634,7 +1634,7 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 		img = NULL;
 		// get_future_image_index() handles direction internally:
 		app_state.current_index = get_future_image_index(1);
-		log_debug2("now at: %d direction: %d...", app_state.current_index, app_state.direction);
+		log_debug2("now at: %d last delta: %d...", app_state.current_index, app_state.last_delta);
 	}
 
 	last_img = img;
@@ -1674,7 +1674,6 @@ int main(int argc, char **argv)
 
 	app_state.runtime_debugging = 0;
 	app_state.big_skip = DEFAULT_BIG_SKIP;
-	app_state.direction = 1;
 	lru_init();
 	check_memory_footprint();
 
@@ -1693,7 +1692,7 @@ int main(int argc, char **argv)
 		// Also increments app_state.current_index
 		int action_happened = process_keypress();
 		if (!action_happened && app_state.slideshow_loop) {
-			app_state.direction = -1;
+			app_state.last_delta = -1;
 			app_state.current_index = get_future_image_index(1);
 		}
 
