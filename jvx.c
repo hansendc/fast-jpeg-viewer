@@ -961,7 +961,7 @@ static void *readahead_once(void *arg) {
 
 	// First, assume that the user will skip through the images sequentially,
 	// one at a time. Read ahead enough to keep all the decode threads busy.
-	for (int i = 0; i < app_state.num_decode_threads * 4; i++) {
+	for (int i = 1; i <= app_state.num_decode_threads * 4; i++) {
 		image_info_t *img = get_future_image(i * app_state.last_delta);
 		// Did it wrap around?
 		if (i && img == first_img) {
