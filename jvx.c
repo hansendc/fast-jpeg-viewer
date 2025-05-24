@@ -1062,6 +1062,16 @@ static void *decode_thread_func(void *arg) {
 	return NULL;
 }
 
+static void clear_decode_queue(void)
+{
+	pthread_mutex_lock(&app_state.decode_queue_mutex);
+	app_state.decode_queue_size = 0;
+	app_state.decode_queue_head = 0;
+	app_state.decode_queue_tail = 0;
+	pthread_mutex_unlock(&app_state.decode_queue_mutex);
+	pthread_cond_signal(&app_state.decode_queue_cond);
+}
+
 static void enqueue_decode(image_info_t *img) {
 	//log_debug("queueing %p %s", img, img->filename);
 
@@ -1543,6 +1553,7 @@ bool process_keypress(void)
 
 		app_state.last_delta = delta;
 		app_state.current_index = (app_state.current_index + delta + app_state.image_count) % app_state.image_count;
+		clear_decode_queue();
 		log_debug2("keypress: delta: %d app_state.current_index: %d", delta, app_state.current_index);
 	}
 
