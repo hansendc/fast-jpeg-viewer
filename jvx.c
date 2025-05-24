@@ -1752,7 +1752,7 @@ size_t init_image_list(int argc, char **argv)
 
 void gui_init(void)
 {
-	app_state.gui = 0;
+	app_state.gui = 1;
 	if (!app_state.gui)
 		return;
 
