@@ -1073,6 +1073,9 @@ static void enqueue_decode(image_info_t *img) {
 		app_state.decode_queue_tail = (app_state.decode_queue_tail + 1) % app_state.decode_queue_capacity;
 		app_state.decode_queue_size++;
 		pthread_cond_signal(&app_state.decode_queue_cond);
+	} else {
+		// the queue reached capacity
+		assert(0);
 	}
 	pthread_mutex_unlock(&app_state.decode_queue_mutex);
 	//log_debug("released &app_state.decode_queue_mutex");
