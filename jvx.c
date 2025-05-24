@@ -45,6 +45,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <unistd.h>
+#include <malloc.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -89,12 +90,137 @@ void jvxbreak(void)
 #define DISABLE_THREADING		false
 #endif
 
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+#define RGB_MASKS 0xFF0000, 0x00FF00, 0x0000FF, 0
+#else
+#define RGB_MASKS 0x0000FF, 0x00FF00, 0xFF0000, 0
+#endif
+
+#ifndef DEBUG_LEVEL
+#define DEBUG_LEVEL 1
+#endif
+
+static uint64_t now_ms() {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint64_t)(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
+}
+
+#define log_debug_level(level, x...) if (DEBUG_LEVEL >= level) {log_debug(x);}
+#define log_debug2(x...) log_debug_level(2, x);
+#define log_debug3(x...) log_debug_level(3, x);
+#define log_debug4(x...) log_debug_level(4, x);
+#define log_debug5(x...) log_debug_level(5, x);
+#define log_debug6(x...) log_debug_level(6, x);
+
+static void log_debug(const char *fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	uint64_t t = now_ms();
+	char buf[64];
+	snprintf(buf, sizeof(buf), "[%lu][TID %ld] ", t, syscall(__NR_gettid));
+	fputs(buf, stderr);
+	vfprintf(stderr, fmt, args);
+	fputc('\n', stderr);
+	va_end(args);
+}
+
 static volatile int quit_flag = 0;
 
 uint64_t reclaimed;
 uint64_t reclaim_tries;
 uint64_t surfaces;
 
+
+
+///////////////////////////////////////////////////////
+//
+//
+//
+// Variable length array
+//
+//
+//
+///////////////////////////////////////////////////////
+
+typedef struct {
+	void** data;
+	size_t size;
+	size_t capacity;
+	pthread_mutex_t lock;
+} ptr_array;
+
+// Initialize the array
+void init_array(ptr_array* arr) {
+	arr->data = NULL;
+	arr->size = 0;
+	arr->capacity = 0;
+	pthread_mutex_init(&arr->lock, NULL);
+}
+
+// Push a value to the end (thread-safe)
+bool push(ptr_array* arr, void *value) {
+	bool success = true;
+	pthread_mutex_lock(&arr->lock);
+
+	if (arr->size == arr->capacity) {
+		size_t new_capacity = arr->capacity ? arr->capacity * 2 : 4;
+		void **new_data = realloc(arr->data, new_capacity * sizeof(void *));
+		if (!new_data) {
+			success = false;
+			goto unlock;
+		}
+		arr->data = new_data;
+		arr->capacity = new_capacity;
+	}
+
+	arr->data[arr->size++] = value;
+
+unlock:
+	pthread_mutex_unlock(&arr->lock);
+	return success;
+}
+
+// Pop a value from the end (thread-safe)
+bool pop(ptr_array* arr, void **out_value) {
+	bool success = true;
+	pthread_mutex_lock(&arr->lock);
+
+	if (arr->size == 0) {
+		success = false;
+	} else {
+		arr->size--;
+		if (out_value) {
+			*out_value = arr->data[arr->size];
+		}
+	}
+
+	pthread_mutex_unlock(&arr->lock);
+	return success;
+}
+
+// Free the array
+void free_array(ptr_array* arr) {
+	pthread_mutex_lock(&arr->lock);
+	free(arr->data);
+	arr->data = NULL;
+	arr->size = 0;
+	arr->capacity = 0;
+	pthread_mutex_unlock(&arr->lock);
+	pthread_mutex_destroy(&arr->lock);
+}
+
+///////////////////////////////////////////////////////
+//
+//
+//
+// END Variable length array
+//
+//
+//
+///////////////////////////////////////////////////////
+
+t
 enum image_state
 {
 	BRAND_NEW = 0,
@@ -194,6 +320,58 @@ static app_state_t app_state = {
 	.memory_limit = DEFAULT_MEMORY_LIMIT_BYTES,
 };
 
+
+static SDL_Surface *__alloc_screen_surface(void)
+{
+	int scale_factor = 1.0;
+	int new_width;//  = img->width  / scale_factor;
+	int new_height;// = img->height / scale_factor;
+
+	new_width  = app_state.screen_width  / scale_factor;
+	new_height = app_state.screen_height / scale_factor;
+
+	SDL_Surface *surface2 = SDL_CreateRGBSurface(
+		0,
+		new_width,
+		new_height,
+		24,				// bits per pixel
+		RGB_MASKS
+	);
+	return surface2;
+}
+
+ptr_array surface_cache;
+
+SDL_Surface *get_surface_for_screen(void)
+{
+	SDL_Surface *surface;
+	void *ptr;
+	bool ok = pop(&surface_cache, &ptr);
+	surface = ptr;
+
+	if (ok) {
+		log_debug4("popped surface: %p", surface);
+		return surface;
+	}
+	log_debug4("failed to pop, allocating");
+
+	return __alloc_screen_surface();
+}
+
+void put_surface_for_screen(SDL_Surface *surface)
+{
+	bool ok = false;
+
+	if (surface_cache.size < 100)
+		ok = push(&surface_cache, surface);
+
+	// If the push failed, just free it normally:
+	if (!ok)
+		SDL_FreeSurface(surface);
+
+	log_debug4("pushed surface: %p size: %d", surface, surface_cache.size);
+}
+
 size_t get_rss_mb()
 {
 	FILE *f = fopen("/proc/self/statm", "r");
@@ -212,35 +390,6 @@ size_t get_rss_mb()
 static void signal_handler(int sig) {
 	(void)sig;
 	quit_flag = 1;
-}
-
-static uint64_t now_ms() {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)(ts.tv_sec) * 1000 + ts.tv_nsec / 1000000;
-}
-
-#ifndef DEBUG_LEVEL
-#define DEBUG_LEVEL 1
-#endif
-
-#define log_debug_level(level, x...) if (DEBUG_LEVEL >= level) {log_debug(x);}
-#define log_debug2(x...) log_debug_level(2, x);
-#define log_debug3(x...) log_debug_level(3, x);
-#define log_debug4(x...) log_debug_level(4, x);
-#define log_debug5(x...) log_debug_level(5, x);
-#define log_debug6(x...) log_debug_level(6, x);
-
-static void log_debug(const char *fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
-	uint64_t t = now_ms();
-	char buf[64];
-	snprintf(buf, sizeof(buf), "[%lu][TID %ld] ", t, syscall(__NR_gettid));
-	fputs(buf, stderr);
-	vfprintf(stderr, fmt, args);
-	fputc('\n', stderr);
-	va_end(args);
 }
 
 static void memory_footprint_inc(image_info_t *img, int64_t by)
@@ -332,16 +481,45 @@ void lru_init(void)
 	pthread_mutex_init(&lru_mutex, NULL);
 }
 
-#if SDL_BYTEORDER == SDL_BIG_ENDIAN
-#define RGB_MASKS 0xFF0000, 0x00FF00, 0x0000FF, 0
-#else
-#define RGB_MASKS 0x0000FF, 0x00FF00, 0xFF0000, 0
-#endif
 
-static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pixels)
+// Thread-local storage key
+static pthread_key_t pixels_key;
+static pthread_once_t pixels_key_once = PTHREAD_ONCE_INIT;
+
+// Free function for thread-local surface
+static void free_pixels(void* ptr) {
+    if (ptr) {
+        free(ptr);
+    }
+}
+
+struct decoder_thread_bufs
 {
-	SDL_Surface *surface1 = SDL_CreateRGBSurfaceFrom(
-		pixels,
+	unsigned char *pixels;
+	SDL_Surface *surface;
+};
+
+// Called once to create the TLS key
+static void make_pixels_key() {
+    pthread_key_create(&pixels_key, free_pixels);
+}
+
+// Get per-thread cached SDL_Surface
+struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
+{
+	pthread_once(&pixels_key_once, make_pixels_key);
+
+	struct decoder_thread_bufs *b = pthread_getspecific(pixels_key);
+	if (b)
+       		return b;
+
+	b = malloc(sizeof(*b));
+
+	// b was NULL: unset and unallocated
+	b->pixels = malloc(img->width * img->height * 3);
+
+	b->surface = SDL_CreateRGBSurfaceFrom(
+		b->pixels,
 		img->width,
 		img->height,
 		24,				// bits per pixel
@@ -349,9 +527,31 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 		RGB_MASKS
 	);
 
-	int scale_factor = 1.0;
-	int new_width;//  = img->width  / scale_factor;
-	int new_height;// = img->height / scale_factor;
+	pthread_setspecific(pixels_key, b);
+
+	return b;
+}
+
+SDL_Surface *get_thread_surface(image_info_t *img)
+{
+	return get_thread_bufs(img)->surface;
+}
+unsigned char *get_thread_pixels(image_info_t *img)
+{
+	return get_thread_bufs(img)->pixels;
+}
+
+static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pixels)
+{
+	SDL_Surface *surface1 = get_thread_surface(img);
+	/*SDL_CreateRGBSurfaceFrom(
+		pixels,
+		img->width,
+		img->height,
+		24,				// bits per pixel
+		img->width * 3,			// pitch (bytes per row)
+		RGB_MASKS
+	);*/
 
 	/*
 	 * The surface _could_ be any size. But images may be
@@ -362,26 +562,17 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	 * Create a surface the size of the display. Scale the image
 	 * down to fit:
 	 */
-	new_width  = app_state.screen_width  / scale_factor;
-	new_height = app_state.screen_height / scale_factor;
 
-	size_t rss_before = get_rss_mb();
-	SDL_Surface *surface2 = SDL_CreateRGBSurface(
-		0,
-		new_width,
-		new_height,
-		24,				// bits per pixel
-		RGB_MASKS
-	);
+	SDL_Surface *surface2 = get_surface_for_screen();
+		//__alloc_screen_surface();
 	size_t rss_after = get_rss_mb();
-	log_debug2("surface made rss grow by: %d MB", rss_after - rss_before);
 	if (rss_after > 20000) {
 		log_debug("Rss too large: %ld", rss_after);
 		exit(23);
 	}
 
 	SDL_BlitScaled(surface1, NULL, surface2, NULL);
-	SDL_FreeSurface(surface1);
+	//SDL_FreeSurface(surface1);
 
 	return surface2;
 }
@@ -550,6 +741,9 @@ uint64_t image_memory_footprint(image_info_t *img)
 	return ret;
 }
 
+#define check_img_footprint(x)	\
+	assert(image_memory_footprint(x) == (x)->i_mem_footprint)
+
 static int decode_jpeg(image_info_t *img)
 {
 	unsigned char *jpeg_buf = NULL;
@@ -558,7 +752,7 @@ static int decode_jpeg(image_info_t *img)
 	img->decode_start_ts = now_ms();
 	tjhandle tj = NULL;
 	int rv = -1;
-	
+
 	assert_mutex_locked(&img->mutex);
 
 	log_debug2("Start decoding %s", img->filename);
@@ -584,10 +778,14 @@ static int decode_jpeg(image_info_t *img)
 		log_debug("tjDecompressHeader3 failed: %s on %s", tjGetErrorStr(), img->filename);
 		goto cleanup;
 	}
+	img->width = w;
+	img->height = h;
 
-	dst_buf = malloc(w * h * 3);
+	// get_thread_pixels() depends on width/height being set:
+	dst_buf = get_thread_pixels(img);
 	if (!dst_buf) {
 		log_debug("malloc failed for %dx%d", w, h);
+		exit(22);
 		goto cleanup;
 	}
 
@@ -596,12 +794,10 @@ static int decode_jpeg(image_info_t *img)
 		goto cleanup;
 	}
 
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 	log_debug2("pixels/surface at decode: %p/%p", dst_buf, img->surface);
 	img->timestamp = now_ms();
-	img->width = w;
-	img->height = h;
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 	// FIXME: this seems a little screwy
 	//
 	// Should we centralize all the state transisions?
@@ -613,13 +809,13 @@ static int decode_jpeg(image_info_t *img)
 		memory_footprint_inc(img, img->jpeg_size);
 	}
 	img->state = DECODED;
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 
 	img->surface = NULL;
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 	img->surface = __create_image_surface(img, dst_buf);
 	memory_footprint_inc(img, img_surface_size(img));
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 	surfaces++;
 
 	pthread_cond_broadcast(&img->cond);
@@ -632,8 +828,8 @@ static int decode_jpeg(image_info_t *img)
 	if (decode_len_ms > 500)
 		log_debug("long decode for %s: %ld ms", img->filename, decode_len_ms);
 cleanup:
-	if (dst_buf)
-		free(dst_buf);
+	//if (dst_buf)
+	//	free(dst_buf);
 	// Note: this leaves the ->jpeg_buf mmap() in place. It will not
 	// get reclaimed until the image itself is reclaimed
 	if (0 && img->jpeg_buf) {
@@ -661,31 +857,32 @@ bool try_free_image_resources(image_info_t *img)
 
 	assert_mutex_locked(&img->mutex);
 
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 	if (!image_memory_footprint(img)) {
 		log_debug4("img %s has no memory footprint", img->filename);
 		assert(!img->surface);
 		return false;
 	}
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 
 	if (img->surface) {
 		long surf_size = img->surface->h * img->surface->pitch;
 		log_debug4("img %s reclaiming surface %d MB", img->filename, surf_size/MB );
 		memory_footprint_inc(img, -surf_size);
-		SDL_FreeSurface(img->surface);
+		//SDL_FreeSurface(img->surface);
+		put_surface_for_screen(img->surface);
 		img->surface = NULL;
 		surfaces--;
 		ret = true;
 	}
-	assert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 
 	if (img->jpeg_buf) {
 		memory_footprint_inc(img, -img->jpeg_size);
 		if (quit_flag) {
 			img_zap_file_mapping(img);
 		} else {
-			madvise(img->jpeg_buf, img->jpeg_size, MADV_DONTNEED);
+			//madvise(img->jpeg_buf, img->jpeg_size, MADV_DONTNEED);
 		}
 		log_debug3("state: %d decoded ago: %ld", img->state, now_ms() - img->timestamp);
 		ret = true;
@@ -695,7 +892,7 @@ bool try_free_image_resources(image_info_t *img)
 	pthread_cond_broadcast(&img->cond);
 	img->readahead_performed = 0;
 
-	dassert(image_memory_footprint(img) == img->i_mem_footprint);
+	check_img_footprint(img);
 
 	return ret;
 }
@@ -827,6 +1024,7 @@ retry:
 
 static void *decode_thread_func(void *arg) {
 	(void)arg;
+
 	while (!app_state.stop_decode_threads) {
 		//log_debug("taking &app_state.decode_queue_mutex");
 
@@ -1207,7 +1405,7 @@ static bool __image_file_ok(image_info_t *img)
 	if (stat(img->filename, &st) != 0) {
 		__invalidate_image(img);
 		log_debug("Error stat()'ing file %s, ignoring...", img->filename);
-		assert(image_memory_footprint(img) == img->i_mem_footprint);
+		check_img_footprint(img);
 		return false;
 	}
 
@@ -1555,7 +1753,7 @@ size_t init_image_list(int argc, char **argv)
 
 void gui_init(void)
 {
-	app_state.gui = 1;
+	app_state.gui = 0;
 	if (!app_state.gui)
 		return;
 
@@ -1658,6 +1856,7 @@ void sdl_drain_events(void)
 // Makes sure the main loop doesn't run more than once every 30ms
 void loop_slowdown(uint64_t loop_start_ts)
 {
+	return;
 	uint64_t loop_duration_ts = now_ms() - loop_start_ts;
 	uint64_t min_loop_len_ms = 30;
 	if (loop_duration_ts < min_loop_len_ms)
@@ -1666,6 +1865,8 @@ void loop_slowdown(uint64_t loop_start_ts)
 
 int main(int argc, char **argv)
 {
+	init_array(&surface_cache);
+
 	process_command_line_args(argc, argv);
 	finalize_action_keys();
 	signal_handler_init();
@@ -1758,6 +1959,7 @@ int main(int argc, char **argv)
 			memory_footprint() >> 20
 	);
 
+	free_array(&surface_cache);
 	return 0;
 }
 
