@@ -1069,7 +1069,8 @@ static void clear_decode_queue(void)
 	app_state.decode_queue_head = 0;
 	app_state.decode_queue_tail = 0;
 	pthread_mutex_unlock(&app_state.decode_queue_mutex);
-	pthread_cond_signal(&app_state.decode_queue_cond);
+	//pthread_cond_signal(&app_state.decode_queue_cond);
+	pthread_cond_broadcast(&app_state.decode_queue_cond);
 }
 
 static void enqueue_decode(image_info_t *img) {
@@ -1082,7 +1083,8 @@ static void enqueue_decode(image_info_t *img) {
 		app_state.decode_queue[app_state.decode_queue_tail] = img;
 		app_state.decode_queue_tail = (app_state.decode_queue_tail + 1) % app_state.decode_queue_capacity;
 		app_state.decode_queue_size++;
-		pthread_cond_signal(&app_state.decode_queue_cond);
+		//hread_cond_signal(&app_state.decode_queue_cond);
+		pthread_cond_broadcast(&app_state.decode_queue_cond);
 	} else {
 		// the queue reached capacity
 		assert(0);
@@ -1159,6 +1161,7 @@ static void img_try_readahead(image_info_t *img)
 	unlock_image(img);
 
 	enqueue_decode(img);
+	log_debug("enqueue decode for %s", img->filename); 
 out:
 	close(fd);
 }
@@ -1166,12 +1169,18 @@ out:
 static void *readahead_once(void *arg) {
 	(void)arg;
 	image_info_t *first_img = get_future_image(0);
-	
 	check_memory_footprint();
+
+	int default_max_readaheads = app_state.num_decode_threads * 10;
+	static int max_readaheads;
+
+	if (!max_readaheads)
+		max_readaheads = default_max_readaheads;
 
 	// First, assume that the user will skip through the images sequentially,
 	// one at a time. Read ahead enough to keep all the decode threads busy.
-	for (int i = 1; i <= app_state.num_decode_threads * 4; i++) {
+	int i;
+	for (i = 0; i < max_readaheads; i++) {
 		image_info_t *img = get_future_image(i * app_state.last_delta);
 		// Did it wrap around?
 		if (i && img == first_img) {
@@ -1179,12 +1188,21 @@ static void *readahead_once(void *arg) {
 			break;
 		}
 		img_try_readahead(img);
-		if (memory_footprint() > app_state.memory_limit)
-		       maybe_reclaim_images();
+		if (memory_footprint() > app_state.memory_limit) {
+			maybe_reclaim_images();
+			max_readaheads--;
+			log_debug2("dropping max_readaheads to: %d", max_readaheads);
+		}
 		if (first_img->state == RECLAIMED) {
 			log_debug("thrashing @ %d", i);
+			max_readaheads /= 2;
 			break;
 		}
+	}
+	if (i == max_readaheads) {
+		max_readaheads++;
+		//max_readaheads = max_readaheads % app_state.image_count;
+		log_debug2("bumping up max_readaheads to: %d", max_readaheads);
 	}
 
 	// Then, do a (normally) smaller readahead assuming that
