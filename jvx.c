@@ -220,7 +220,6 @@ void free_array(ptr_array* arr) {
 //
 ///////////////////////////////////////////////////////
 
-t
 enum image_state
 {
 	BRAND_NEW = 0,
