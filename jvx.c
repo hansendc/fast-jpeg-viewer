@@ -1524,6 +1524,21 @@ char **get_all_files_from_args(int argc, char **argv, size_t *out_count)
 // FIXME: change ordering??
 void run_action_with_replace(int action_nr, char *filename);
 
+ptr_array keypress_queue;
+
+void sdl_drain_events(void)
+{
+	// Drain all pending keyboard events to avoid rapid repeated input
+	SDL_Event evt_drain;
+	while (SDL_PollEvent(&evt_drain)) {
+		// Only quit if quit event received during draining
+		if (evt_drain.type == SDL_QUIT) {
+			quit_flag = 1;
+			return;
+		}
+	}
+}
+
 bool process_keypress(void)
 {
 	SDL_Event e;
@@ -1532,12 +1547,49 @@ bool process_keypress(void)
 	if (!app_state.gui)
 		return false;
 
-	image_info_t *img = get_future_image(0);
+	static int first = 1;
+	if (first)
+		init_array(&keypress_queue);
 
-	SDL_PollEvent(&e);
-	if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)) {
-		quit_flag = 1;
-	} else if (e.type == SDL_KEYDOWN) {
+	/* First, save all the events in a place they are visible: */
+	while (SDL_PollEvent(&e)) {
+		SDL_Event *e2 = malloc(sizeof(e));
+		memcpy(e2, &e, sizeof(e));
+		bool ok = push(&keypress_queue, e2);
+		if (!ok) {
+			log_debug("unable to queue keypress");
+			free(e2);
+			return false;
+		}
+	}
+
+	/* Now go through all the saved events: */
+	SDL_Event *e3;
+	bool suppress_repeats = false;
+	while (pop(&keypress_queue, (void **)&e3)) {
+		memcpy(&e, e3, sizeof(e));
+		free(e3);
+		// Quit immediately if seen:
+		if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)) {
+			quit_flag = 1;
+			return false;
+		}
+		// The user released a key, they want the repeats to
+		// stop immediately. Suppress the rest of them:
+		if (e.type == SDL_KEYUP) {
+			suppress_repeats = true;
+			continue;
+		}
+		// Actually suppress the repeats:
+		if (e.key.repeat && suppress_repeats)
+			continue;
+
+		// Fall down into normal key processing:
+		break;
+	}
+
+	image_info_t *img = get_future_image(0);
+	if (e.type == SDL_KEYDOWN) {
 		int delta = 0;
 		if (e.key.keysym.sym == SDLK_RIGHT) {
 			delta = 1;
@@ -1871,19 +1923,6 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 	return img;
 }
 
-void sdl_drain_events(void)
-{
-	// Drain all pending keyboard events to avoid rapid repeated input
-	SDL_Event evt_drain;
-	while (SDL_PollEvent(&evt_drain)) {
-		// Only quit if quit event received during draining
-		if (evt_drain.type == SDL_QUIT) {
-			quit_flag = 1;
-			return;
-		}
-	}
-}
-
 // Makes sure the main loop doesn't run more than once every 30ms
 void loop_slowdown(uint64_t loop_start_ts)
 {
@@ -1949,11 +1988,11 @@ int main(int argc, char **argv)
 
 		if (!app_state.gui)
 			continue;
-		sdl_drain_events();
 		if (app_state.slideshow_loop)
 			continue;
 
 		loop_slowdown(loop_start_ts);
+		//sdl_drain_events();
 	}
 
 	app_state.stop_decode_threads = 1;
