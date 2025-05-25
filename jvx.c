@@ -68,12 +68,14 @@
 void jvxbreak(void)
 {
 	printf("jvxbreak()\n");
+	exit(99);
 	return;
 }
 
-#define dassert(cond) do {	\
-	if (!(cond))		\
-		jvxbreak();	\
+#define dassert(cond) do {		\
+	if (!(cond))	{		\
+		jvxbreak();		\
+	}				\
 } while(0)
 
 #define MB (1UL<<20)
@@ -97,6 +99,7 @@ void jvxbreak(void)
 #endif
 
 #ifndef DEBUG_LEVEL
+#error foo
 #define DEBUG_LEVEL 1
 #endif
 
@@ -107,13 +110,18 @@ static uint64_t now_ms() {
 }
 
 #define log_debug_level(level, x...) if (DEBUG_LEVEL >= level) {log_debug(x);}
+#define log_debug1(x...) log_debug_level(2, x);
 #define log_debug2(x...) log_debug_level(2, x);
 #define log_debug3(x...) log_debug_level(3, x);
 #define log_debug4(x...) log_debug_level(4, x);
 #define log_debug5(x...) log_debug_level(5, x);
 #define log_debug6(x...) log_debug_level(6, x);
 
+static pthread_mutex_t debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 static void log_debug(const char *fmt, ...) {
+	pthread_mutex_lock(&debug_mutex);
+
 	va_list args;
 	va_start(args, fmt);
 	uint64_t t = now_ms();
@@ -123,6 +131,9 @@ static void log_debug(const char *fmt, ...) {
 	vfprintf(stderr, fmt, args);
 	fputc('\n', stderr);
 	va_end(args);
+
+	pthread_mutex_unlock(&debug_mutex);
+	//SDL_Delay(1000);
 }
 
 static volatile int quit_flag = 0;
@@ -300,11 +311,9 @@ typedef struct {
 
 	TTF_Font *font;
 
-	image_info_t **decode_queue;
-	int decode_queue_capacity;
-	int decode_queue_size;
-	int decode_queue_head;
-	int decode_queue_tail;
+	int history_tail;
+	int decode_head;
+	int decode_tail;
 	pthread_mutex_t decode_queue_mutex;
 	pthread_cond_t decode_queue_cond;
 
@@ -754,15 +763,16 @@ static int decode_jpeg(image_info_t *img)
 
 	assert_mutex_locked(&img->mutex);
 
-	log_debug2("Start decoding %s", img->filename);
+	log_debug2("[DECODE] Start %s state: %d", img->filename, img->state);
 	if (img->state == INVALID) {
-		log_debug2("%s() INVALID: %s", __func__, img->filename);
+		log_debug("%s() INVALID: %s", __func__, img->filename);
 		goto cleanup;
 	}
 
 	jpeg_buf = img->jpeg_buf;
 	jpeg_size = img->jpeg_size;
 	if (!jpeg_buf) {
+		log_debug("[DECODE] %s() no jpeg_buf %s", __func__, img->filename);
 		goto cleanup;
 	}
 
@@ -819,7 +829,7 @@ static int decode_jpeg(image_info_t *img)
 
 	pthread_cond_broadcast(&img->cond);
 
-	log_debug2("Finished decoding %s (%dx%d)", img->filename, w, h);
+	log_debug1("[DECODE] Finished decoding %s (%dx%d) surface: %p", img->filename, w, h, img->surface);
 	rv = 0;
 	img->decode_done_ts = now_ms();
 
@@ -840,8 +850,19 @@ cleanup:
 	if (tj)
 		tjDestroy(tj);
 
+	log_debug3("[DECODE] Core end %s", img->filename);
 	return rv;
 }
+
+int inc_image_nr(int nr, int by)
+{
+	nr += by;
+	if (nr < 0)
+		nr += app_state.image_count;
+	nr = nr % app_state.image_count;
+	return nr;
+}
+
 
 void img_zap_file_mapping(image_info_t *img)
 {
@@ -866,7 +887,7 @@ bool try_free_image_resources(image_info_t *img)
 
 	if (img->surface) {
 		long surf_size = img->surface->h * img->surface->pitch;
-		log_debug4("img %s reclaiming surface %d MB", img->filename, surf_size/MB );
+		log_debug3("[RECLAIM] img %s reclaiming surface %d MB", img->filename, surf_size/MB );
 		memory_footprint_inc(img, -surf_size);
 		//SDL_FreeSurface(img->surface);
 		put_surface_for_screen(img->surface);
@@ -976,19 +997,30 @@ retry:
 			break;
 		}
 
-		image_info_t *img = find_oldest_image(&memory_footprint_slow);
+		image_info_t *img = &app_state.images[app_state.history_tail];
+		if (0)
+			img = find_oldest_image(&memory_footprint_slow);
 		uint64_t f1 = image_memory_footprint(img);
 		check_memory_footprint();
 		int failed = pthread_mutex_trylock(&img->mutex);
 
 		// Sent it to the end of the LRU
-		lru_touch(img);
 		if (failed) {
 			log_debug2("reclaim failed to acquire lock for %s", img->filename);
 			continue;
 		}
 		bool freed_one = try_free_image_resources(img);	
 		img->timestamp = 0;
+
+		log_debug1("[RECLAIM] footprint after try free %s %ld global: %ld", img->filename, image_memory_footprint(img), memory_footprint()/MB);
+		if ((img == &app_state.images[app_state.history_tail]) &&
+		    image_memory_footprint(img) == 0) {
+			int new_tail = inc_image_nr(app_state.history_tail, 1);
+			log_debug2("[RECLAIM] success freeing %s, history tail %d=>%d",
+				  img->filename, app_state.history_tail, new_tail);
+			app_state.history_tail = new_tail;
+		}
+
 		unlock_image(img);
 		check_memory_footprint();
 
@@ -1021,104 +1053,150 @@ retry:
 	}
 }
 
-static void *decode_thread_func(void *arg) {
+bool moving_forward(void)
+{
+	return app_state.last_delta > 0;
+}
+bool moving_backward(void)
+{
+	return app_state.last_delta < 0;
+}
+
+int decode_queue_size(void)
+{
+	int ret;
+	if (moving_forward()) {
+		ret = app_state.decode_head - app_state.decode_tail;
+	} else if (moving_backward()) {
+		ret = app_state.decode_tail - app_state.decode_head;
+	}
+	if (ret < 0)
+		ret += app_state.image_count;
+	log_debug5("decode_queue_size(): %d h:%d t:%d", ret, app_state.decode_head, app_state.decode_tail);
+	dassert(ret >= 0);
+	return ret;
+}
+
+static void clear_decode_queue(char *reason)
+{
+	pthread_mutex_lock(&app_state.decode_queue_mutex);
+	app_state.decode_head  = app_state.decode_tail;
+	app_state.decode_tail  = app_state.current_index;
+
+	decode_queue_size(); // <- has an assert
+	pthread_mutex_unlock(&app_state.decode_queue_mutex);
+	//pthread_cond_signal(&app_state.decode_queue_cond);
+	pthread_cond_broadcast(&app_state.decode_queue_cond);
+	log_debug2("cleared decode queue reason: %s", reason);
+}
+
+static void *decode_thread_func(void *arg)
+{
 	(void)arg;
 
 	while (!app_state.stop_decode_threads) {
 		//log_debug("taking &app_state.decode_queue_mutex");
 
 		pthread_mutex_lock(&app_state.decode_queue_mutex);
-		log_debug4("took &app_state.decode_queue_mutex");
-		while (app_state.decode_queue_size == 0 && !app_state.stop_decode_threads) {
-			log_debug5("cond1 &app_state.decode_queue_mutex");
+		while (decode_queue_size() == 0 && !app_state.stop_decode_threads) {
 			pthread_cond_wait(&app_state.decode_queue_cond, &app_state.decode_queue_mutex);
-			log_debug5("cond2 &app_state.decode_queue_mutex");
+			log_debug4("[DECODE] thread woke up");
 		}
 		image_info_t *img = NULL;
-		if (app_state.decode_queue_size > 0) {
-			img = app_state.decode_queue[app_state.decode_queue_head];
-			//log_debug("dequeued %s", img->filename);
-			app_state.decode_queue_head = (app_state.decode_queue_head + 1) % app_state.decode_queue_capacity;
-			app_state.decode_queue_size--;
+		if (decode_queue_size() > 0) {
+			img = &app_state.images[app_state.decode_tail];
+			int next = inc_image_nr(app_state.decode_tail, app_state.last_delta);
+			log_debug3("[DECODE] moving app_state.decode_tail: %d=>%d decode_queue_size(): %d",
+				  app_state.decode_tail, next, decode_queue_size());
+			app_state.decode_tail = next;
+			decode_queue_size(); // <- has an assert
 		}
 		pthread_mutex_unlock(&app_state.decode_queue_mutex);
 		log_debug4("released &app_state.decode_queue_mutex");
 
 		if (img) {
-			log_debug3("considering decode of %s", img->filename);
+			log_debug2("[DECODE] considering %s decode_queue_size(): %d", img->filename, decode_queue_size());
 
-			lru_touch(img);
 			lock_image(img);
 			if (image_ready_to_render(img->state)) {
 				unlock_image(img);
-				log_debug3("decode thread skipping over ready image: %s state: %d", img->filename, img->state);
+				log_debug2("decode thread skipping over ready image: %s state: %d", img->filename, img->state);
 				log_debug5("surface: %p\n", img->surface);
 				continue;
 			}
+			// FIXME: this open_... should be unecessary or at
+			// _least_ shows that readahead was ineffective.
+			// Warn about it perhaps.
+			open_and_map_img(img);
+			//
 			decode_jpeg(img);
+			log_debug2("[DECODE] done %s decode_queue_size(): %d surf: %p", img->filename, decode_queue_size(), img->surface);
+			if (img->state != INVALID)
+				dassert(img->surface);
 			unlock_image(img);
+		} else {
+			log_debug("[DECODE] nothing to decode decode_queue_size(): %d", decode_queue_size());
 		}
+		//if (memory_footprint() > app_state.memory_limit) {
+		//	//clear_decode_queue("decode hit mem limit");
+		//	continue;
+		//}
 	}
 	return NULL;
 }
 
-static void clear_decode_queue(void)
+static bool enqueue_decode(void)
 {
+	bool ret;
 	pthread_mutex_lock(&app_state.decode_queue_mutex);
-	app_state.decode_queue_size = 0;
-	app_state.decode_queue_head = 0;
-	app_state.decode_queue_tail = 0;
-	pthread_mutex_unlock(&app_state.decode_queue_mutex);
-	//pthread_cond_signal(&app_state.decode_queue_cond);
-	pthread_cond_broadcast(&app_state.decode_queue_cond);
-}
 
-static void enqueue_decode(image_info_t *img) {
-	//log_debug("queueing %p %s", img, img->filename);
-
-	//log_debug("taking &app_state.decode_queue_mutex");
-	pthread_mutex_lock(&app_state.decode_queue_mutex);
-	//log_debug("took &app_state.decode_queue_mutex");
-	if (app_state.decode_queue_size < app_state.decode_queue_capacity) {
-		app_state.decode_queue[app_state.decode_queue_tail] = img;
-		app_state.decode_queue_tail = (app_state.decode_queue_tail + 1) % app_state.decode_queue_capacity;
-		app_state.decode_queue_size++;
-		//hread_cond_signal(&app_state.decode_queue_cond);
-		pthread_cond_broadcast(&app_state.decode_queue_cond);
+	int next = inc_image_nr(app_state.decode_head, app_state.last_delta);
+	if (next == app_state.history_tail) {
+		image_info_t *tail_img = &app_state.images[app_state.history_tail];
+		log_debug("[READAHEAD] enqueue hit TAIL @ %d, state: %d", app_state.history_tail, tail_img->state);
+		//assert(tail_img->state == DECODED);
+		app_state.history_tail++;
+		ret = false;
 	} else {
-		// the queue reached capacity
-		assert(0);
+		ret = true;
 	}
+	log_debug3("[READAHEAD] moving app_state.decode_head: %d=>%d decode_queue_size(): %d", app_state.decode_head, next, decode_queue_size());
+
+	image_info_t *img = &app_state.images[app_state.decode_head];
+	log_debug1("[READAHEAD] enqueued %s", img->filename);
+	app_state.decode_head = next;
+	decode_queue_size(); // <- has an assert
+//out:
 	pthread_mutex_unlock(&app_state.decode_queue_mutex);
-	//log_debug("released &app_state.decode_queue_mutex");
+	if (ret == true) {
+		//pthread_cond_signal(&app_state.decode_queue_cond);
+		pthread_cond_broadcast(&app_state.decode_queue_cond);
+	}
+	return ret;
 }
 
-static int get_future_image_index(int nr_to_advance)
+/*
+ * Takes ->last_delta into account, so may move up or down and by more
+ * than one image.
+ */
+static int get_future_image_slot(int slots_to_advance)
 {
 	int image_nr;
 
-	// Bound it in case the request is huge:
-	nr_to_advance %= app_state.image_count;
+	image_nr = inc_image_nr(app_state.current_index,
+			       	slots_to_advance * app_state.last_delta);
+	log_debug5("get_future_image_slot(%d) %d+%d => %d", slots_to_advance,
+		  app_state.current_index, app_state.last_delta, image_nr);
 
-	int direction = 1;
-	if (app_state.last_delta < 0)
-		direction = -1;
-
-	image_nr = app_state.current_index;
-	image_nr += nr_to_advance * direction;
-	// If it ends up negative, bring it back positive:
-	if (image_nr < 0)
-		image_nr += app_state.image_count;
-	image_nr %= app_state.image_count;
-	
 	return image_nr;
 }
 
 
 static image_info_t *get_future_image(int nr_to_advance)
 {
-	int image_nr = get_future_image_index(nr_to_advance);
+	int image_nr = get_future_image_slot(nr_to_advance);
 	image_info_t *img = &app_state.images[image_nr];
+	log_debug5("get_future_image() image_nr: %d img: %p", image_nr, img);
 	return img;
 }
 
@@ -1160,50 +1238,60 @@ static void img_try_readahead(image_info_t *img)
 	open_and_map_img(img);
 	unlock_image(img);
 
-	enqueue_decode(img);
-	log_debug("enqueue decode for %s", img->filename); 
+	log_debug2("[READAHEAD] opened and mapped %s", img->filename);
+	enqueue_decode();
+	log_debug2("[READAHEAD] enqueue decode for %s", img->filename); 
 out:
 	close(fd);
 }
 
-static void *readahead_once(void *arg) {
+static void readahead_once(void *arg) {
 	(void)arg;
-	image_info_t *first_img = get_future_image(0);
-	check_memory_footprint();
+	image_info_t *first_img = NULL;
 
-	int default_max_readaheads = app_state.num_decode_threads * 10;
-	static int max_readaheads;
 
-	if (!max_readaheads)
-		max_readaheads = default_max_readaheads;
+	int max_nr_readaheads = app_state.image_count;
+	max_nr_readaheads = app_state.num_decode_threads * 4;
 
-	// First, assume that the user will skip through the images sequentially,
-	// one at a time. Read ahead enough to keep all the decode threads busy.
-	int i;
-	for (i = 0; i < max_readaheads; i++) {
-		image_info_t *img = get_future_image(i * app_state.last_delta);
-		// Did it wrap around?
-		if (i && img == first_img) {
-			log_debug("wrap @ %d", i);
+	log_debug4("readahead_once()");
+	for (int i = 0; i < max_nr_readaheads; i++) {
+		image_info_t *img = get_future_image(i);
+		log_debug2("readahead_once() image i:%d img: %p footprint: %ld", i, img, memory_footprint()/MB);
+		if (first_img == NULL) {
+			first_img = get_future_image(0);
+		} else if (img == first_img) {
+			// did the loop wrap all the way around?
+			// if so, no reason to keep doing readahead
+			log_debug1("wrap @ %d", i);
+			exit(66);
 			break;
 		}
+		// If moving the decode_head would run into the
+		// history tail, stop:
+		if (get_future_image_slot(i+1) == app_state.history_tail) {
+			log_debug2("hit tail, ht: %d ci: %d dt: %d dh: %d size: %d",
+				  app_state.history_tail,
+				  app_state.current_index,
+				  app_state.decode_tail,
+				  app_state.decode_head,
+				  decode_queue_size()
+				  );
+			break;
+		}
+
 		img_try_readahead(img);
 		if (memory_footprint() > app_state.memory_limit) {
+			log_debug2("[READAHEAD] over memory limit, clearing and reclaiming: %ld", memory_footprint()/MB);
 			maybe_reclaim_images();
-			max_readaheads--;
-			log_debug2("dropping max_readaheads to: %d", max_readaheads);
+			//clear_decode_queue("readahead hit mem limit");
 		}
 		if (first_img->state == RECLAIMED) {
-			log_debug("thrashing @ %d", i);
-			max_readaheads /= 2;
+			log_debug("thrashing");
+			clear_decode_queue("readahead thrashing");
 			break;
 		}
 	}
-	if (i == max_readaheads) {
-		max_readaheads++;
-		//max_readaheads = max_readaheads % app_state.image_count;
-		log_debug2("bumping up max_readaheads to: %d", max_readaheads);
-	}
+	return;
 
 	// Then, do a (normally) smaller readahead assuming that
 	// the user will skip (with page-up/down) at least once.
@@ -1218,7 +1306,7 @@ static void *readahead_once(void *arg) {
 		img_try_readahead(img);
 	}
 	maybe_reclaim_images();
-	return NULL;
+	return;
 }
 
 static void *readahead_thread_func(void *arg)
@@ -1373,11 +1461,12 @@ static void render_image(image_info_t *img)
 	if (0)
 		wait_for_image(img);
 
-	log_debug2("locking image %s (%dx%d)", img->filename, img->width, img->height);
+	log_debug2("[RENDER] locking image %s (%dx%d) surface: %p", img->filename, img->width, img->height, img->surface);
 	// Lock the image during rendering. Prevents reclaim among other things
 	img->verbose_unlock = 1;
 
-	lru_touch(img);
+	if (0)
+		lru_touch(img);
 	lock_image(img);
 	img->verbose_unlock = 0;
 	if (!image_ready_to_render(img->state))
@@ -1463,7 +1552,7 @@ static bool decode_and_render_image(image_info_t *img)
 	unlock_image(img);
 
 	if (app_state.gui) {
-		enqueue_decode(img);
+		//enqueue_decode(img);
 		render_image(img);
 	}
 
@@ -1542,7 +1631,6 @@ void sdl_drain_events(void)
 bool process_keypress(void)
 {
 	SDL_Event e;
-	int delta = 0;
 
 	if (!app_state.gui)
 		return false;
@@ -1555,12 +1643,21 @@ bool process_keypress(void)
 	while (SDL_PollEvent(&e)) {
 		SDL_Event *e2 = malloc(sizeof(e));
 		memcpy(e2, &e, sizeof(e));
+
+		// Quit immediately if seen:
+		if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)) {
+			log_debug("[KEYPRESS] quit");
+			quit_flag = 1;
+			return false;
+		}
+
 		bool ok = push(&keypress_queue, e2);
 		if (!ok) {
 			log_debug("unable to queue keypress");
 			free(e2);
 			return false;
 		}
+		log_debug5("[KEYPRESS] key: %d", e.type);
 	}
 
 	/* Now go through all the saved events: */
@@ -1569,11 +1666,6 @@ bool process_keypress(void)
 	while (pop(&keypress_queue, (void **)&e3)) {
 		memcpy(&e, e3, sizeof(e));
 		free(e3);
-		// Quit immediately if seen:
-		if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)) {
-			quit_flag = 1;
-			return false;
-		}
 		// The user released a key, they want the repeats to
 		// stop immediately. Suppress the rest of them:
 		if (e.type == SDL_KEYUP) {
@@ -1588,17 +1680,20 @@ bool process_keypress(void)
 		break;
 	}
 
+	bool did_move = false;
 	image_info_t *img = get_future_image(0);
 	if (e.type == SDL_KEYDOWN) {
 		int delta = 0;
+		int absolute = -1;
+
 		if (e.key.keysym.sym == SDLK_RIGHT) {
 			delta = 1;
 		} else if (e.key.keysym.sym == SDLK_LEFT) {
 			delta = -1;
 		} else if (e.key.keysym.sym == SDLK_HOME) {
-			delta = -app_state.current_index;
+			absolute = 0;
 		} else if (e.key.keysym.sym == SDLK_END) {
-			delta = app_state.image_count - app_state.current_index - 1;
+			absolute = app_state.image_count - 1;
 		} else if (e.key.keysym.sym == SDLK_PAGEDOWN) {
 			delta = app_state.big_skip;
 		} else if (e.key.keysym.sym == SDLK_PAGEUP) {
@@ -1621,14 +1716,32 @@ bool process_keypress(void)
 		if (mod & KMOD_ALT)
 			delta *= 8;
 
+		if (!delta && absolute == -1)
+			goto out;
+		did_move = true;
+
+		if (absolute != -1) {
+			// Absolute change in position
+			delta = 1;
+		} else {
+			// Delta change
+			if (app_state.last_delta != delta)
+				clear_decode_queue("delta change");
+		}
+
+		pthread_mutex_lock(&app_state.decode_queue_mutex);
 		app_state.last_delta = delta;
-		app_state.current_index = (app_state.current_index + delta + app_state.image_count) % app_state.image_count;
-		clear_decode_queue();
+		if (absolute == -1)
+			app_state.current_index = inc_image_nr(app_state.current_index, delta);
+		else
+			app_state.current_index = absolute;
+		pthread_mutex_unlock(&app_state.decode_queue_mutex);
+
 		log_debug2("keypress: delta: %d app_state.current_index: %d", delta, app_state.current_index);
 	}
-
+out:
 	// Report if a keypress caused the app_state.current_index to move:
-	return !!delta;
+	return did_move;
 }
 
 extern char **environ;
@@ -1870,8 +1983,6 @@ void gui_init(void)
 
 void init_decode_threads(void)
 {
-	app_state.decode_queue_capacity = app_state.image_count;
-	app_state.decode_queue = malloc(sizeof(app_state.decode_queue[0]) * app_state.image_count);
 	pthread_mutex_init(&app_state.decode_queue_mutex, NULL);
 	pthread_cond_init(&app_state.decode_queue_cond, NULL);
 
@@ -1914,7 +2025,7 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 		log_debug("Could not display %s, trying next image...", img->filename);
 		img = NULL;
 		// get_future_image_index() handles direction internally:
-		app_state.current_index = get_future_image_index(1);
+		app_state.current_index = get_future_image_slot(1);
 		log_debug2("now at: %d last delta: %d...", app_state.current_index, app_state.last_delta);
 	}
 
@@ -1926,7 +2037,6 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 // Makes sure the main loop doesn't run more than once every 30ms
 void loop_slowdown(uint64_t loop_start_ts)
 {
-	return;
 	uint64_t loop_duration_ts = now_ms() - loop_start_ts;
 	uint64_t min_loop_len_ms = 30;
 	if (loop_duration_ts < min_loop_len_ms)
@@ -1943,6 +2053,7 @@ int main(int argc, char **argv)
 
 	init_image_list(argc, argv);
 
+	app_state.last_delta = 1;
 	app_state.runtime_debugging = 0;
 	app_state.big_skip = DEFAULT_BIG_SKIP;
 	lru_init();
@@ -1963,8 +2074,8 @@ int main(int argc, char **argv)
 		// Also increments app_state.current_index
 		int action_happened = process_keypress();
 		if (!action_happened && app_state.slideshow_loop) {
-			app_state.last_delta = -1;
-			app_state.current_index = get_future_image_index(1);
+			app_state.last_delta = 1;
+			app_state.current_index = get_future_image_slot(1);
 		}
 
 		image_info_t *img = try_render_one_image();
@@ -1975,7 +2086,7 @@ int main(int argc, char **argv)
 
 		log_debug2("Done changing image %s (%dx%d)", img->filename, img->width, img->height);
 		if (app_state.nr_rendered % 100 == 0) {
-			log_debug("frame rate: %.1f/s reclaimed: %ld/%ld rss: %ld surfaces: %ld mem: %ld MB",
+			printf("frame rate: %.1f/s reclaimed: %ld/%ld rss: %ld surfaces: %ld mem: %ld MB\n",
 					1.0 * app_state.nr_rendered / ((now_ms() - start_ts) / 1000.0),
 					reclaimed, reclaim_tries,
 					get_rss_mb(),
