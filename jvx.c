@@ -1464,29 +1464,22 @@ SDL_Texture *get_next_texture(SDL_Surface *surface)
 {
 	int next_texture;
 
-	log_debug("%s()::%ld", __func__, __LINE__);
-
 	app_state.current_texture = (app_state.current_texture + 1) % 2;
 	next_texture = app_state.current_texture;
 
-	log_debug("next_texture: %d %p", next_texture, app_state.textures[next_texture]);
+	log_debug4("next_texture: %d %p", next_texture, app_state.textures[next_texture]);
 
 	if (app_state.textures[next_texture] != NULL) {
 		SDL_Texture *try_texture = app_state.textures[next_texture];
 
-		log_debug("%s()::%ld", __func__, __LINE__);
-		if (surface_and_texture_match(surface, try_texture)) {
-			log_debug("%s()::%ld", __func__, __LINE__);
+		if (surface_and_texture_match(surface, try_texture))
 			return try_texture;
-		}
 
 		// No match. Destroy this one and create a new one below:
 		SDL_DestroyTexture(try_texture);
 		app_state.textures[next_texture] = NULL;
-		log_debug("%s()::%ld", __func__, __LINE__);
 	}
 
-	log_debug("%s()::%ld s->w: %d s->h: %d", __func__, __LINE__, surface->w, surface->h);
 	app_state.textures[next_texture] = SDL_CreateTexture(
 	    app_state.renderer,
 	    SDL_PIXELFORMAT_RGB24,       // or match surface->format->format
@@ -1494,9 +1487,7 @@ SDL_Texture *get_next_texture(SDL_Surface *surface)
 	    surface->w,
 	    surface->h
 	);
-	log_debug("%s()::%ld", __func__, __LINE__);
 	SDL_UpdateTexture(app_state.textures[next_texture], NULL, surface->pixels, surface->pitch);
-	log_debug("%s()::%ld", __func__, __LINE__);
 
 	return app_state.textures[next_texture];
 }
