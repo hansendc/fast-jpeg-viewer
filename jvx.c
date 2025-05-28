@@ -113,6 +113,9 @@ enum exif_orientation
     EXIF_ORIENT_ERROR		 = 9,
 };
 
+#define BYTES_PER_PIXEL 3
+#define BITS_PER_PIXEL (BYTES_PER_PIXEL*8)
+
 #ifndef DEBUG_LEVEL
 #error foo
 #define DEBUG_LEVEL 1
@@ -354,6 +357,26 @@ static SDL_Surface *__alloc_screen_surface(void)
 	new_width  = app_state.screen_width  / scale_factor;
 	new_height = app_state.screen_height / scale_factor;
 
+	/*
+	int alignment = 64;
+	void *aligned_pixels;
+	int ret = posix_memalign(&aligned_pixels,
+				alignment,
+				new_height * new_width * BYTES_PER_PIXEL);
+ 	if (ret != 0) {
+		perror("posix_memalign");
+		exit(1);
+	}
+
+	SDL_Surface *surface2 = SDL_CreateRGBSurfaceFrom(
+		aligned_pixels,
+		new_width,
+		new_height,
+		24,				// bits per pixel
+		new_width * BYTES_PER_PIXEL,	// pitch (bytes per row)
+		RGB_MASKS
+	);*/
+
 	SDL_Surface *surface2 = SDL_CreateRGBSurface(
 		0,
 		new_width,
@@ -361,6 +384,7 @@ static SDL_Surface *__alloc_screen_surface(void)
 		24,				// bits per pixel
 		RGB_MASKS
 	);
+
 	return surface2;
 }
 
@@ -2290,8 +2314,14 @@ void run_action_with_replace(int action_nr, char *filename)
 
 void *dave_malloc(size_t size)
 {
-	log_debug("%s() size: %ld", __func__, size);
-	return malloc(size);
+	//void *ret = malloc(size);
+	int alignment = 4096;
+	void *ret = NULL;
+	int err = posix_memalign(&ret,
+				alignment,
+				size);
+	log_debug("%s() size: %ld err: %d ptr: %p->%p", __func__, size, err, ret, ret+size);
+	return ret;
 }
 void dave_free(void *ptr)
 {
@@ -2300,13 +2330,15 @@ void dave_free(void *ptr)
 }
 void *dave_calloc(size_t nmemb, size_t size)
 {
-	log_debug("%s() nmemb: %ld size: %ld", __func__, nmemb, size);
-	return calloc(nmemb, size);
+	void *ret = calloc(nmemb, size);
+	log_debug("%s() nmemb: %ld size: %ld ptr: %p", __func__, nmemb, size);
+	return ret;
 }
 void *dave_realloc(void *ptr, size_t size)
 {
-	log_debug("%s() ptr: %p size: %ld", __func__, ptr, size);
-	return realloc(ptr, size);
+	void *ret = realloc(ptr, size);
+	log_debug("%s() ptr: %p size: %ld old: %p new: %p", __func__, ptr, size, ptr, ret);
+	return ret;
 }
 
 void signal_handler_init(void)
