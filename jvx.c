@@ -761,6 +761,11 @@ int transform_surface(SDL_Surface *src,
     // 3) Create & configure filter graph
     AVFilterGraph *graph = avfilter_graph_alloc();
     if (!graph) return -1;
+    // This disables libavfilter threading since this
+    // program does its own threading it does not need
+    // the overhead of creating and destroying more
+    // threads:
+    graph->thread_type = 0;
 
     AVFilterContext *src_ctx = NULL, *sink_ctx = NULL;
     char args[256];
