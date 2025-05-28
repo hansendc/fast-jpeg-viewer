@@ -849,7 +849,7 @@ static int decode_jpeg(image_info_t *img)
 
 	log_debug2("[DECODE] Start %s state: %d", img->filename, img->state);
 	if (img->state == INVALID) {
-		log_debug("%s() INVALID: %s", __func__, img->filename);
+		log_debug("[DECODE] INVALID: %s", __func__, img->filename);
 		goto cleanup;
 	}
 
