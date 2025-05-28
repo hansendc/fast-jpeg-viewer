@@ -512,14 +512,35 @@ static void make_pixels_key() {
     pthread_key_create(&pixels_key, free_pixels);
 }
 
+bool image_matches_surface(image_info_t *img, SDL_Surface *surface)
+{
+	if (img->width != surface->w)
+		return false;
+	if (img->height != surface->h)
+		return false;
+	return true;
+}
+
 // Get per-thread cached SDL_Surface
+//
+// FIXME: free this at exit
 struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
 {
 	pthread_once(&pixels_key_once, make_pixels_key);
 
 	struct decoder_thread_bufs *b = pthread_getspecific(pixels_key);
-	if (b)
+	if (b && image_matches_surface(img, b->surface))
        		return b;
+
+	if (b) {
+		log_debug("decoder surface cache mismatch, reallocating...");
+		// surface is the wrong size, reallocate it
+		//
+		// FIXME: this could be made much more intelligent by keeping
+		// a cache of surfaces around for each different image size.
+		free(b->pixels);
+		SDL_FreeSurface(b->surface);
+	}
 
 	b = malloc(sizeof(*b));
 
@@ -534,6 +555,8 @@ struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
 		img->width * 3,			// pitch (bytes per row)
 		RGB_MASKS
 	);
+
+	log_debug("created surface %p for img: %s (%dx%d)", b->surface, img->filename, img->width, img->height);
 
 	pthread_setspecific(pixels_key, b);
 
@@ -1354,16 +1377,55 @@ static void start_readahead(void)
 	pthread_mutex_unlock(&app_state.readahead_queue_mutex);
 }
 
+bool surface_and_texture_match(SDL_Surface *surface,
+			       SDL_Texture *texture)
+{
+	int t_width;
+	int t_height;
+	int ret;
+
+	ret = SDL_QueryTexture(texture, NULL, NULL, &t_width, &t_height);
+	// If the query fails, be safe and assume they don't match
+	if (ret)
+		return false;
+
+	log_debug2("t_width: %d t_height: %d", t_width, t_height);
+	log_debug2("s_width: %d s_height: %d", surface->w, surface->h);
+
+	if (surface->w != t_width)
+		return false;
+	if (surface->h != t_height)
+		return false;
+	return true;
+}
+
 SDL_Texture *get_next_texture(SDL_Surface *surface)
 {
 	int next_texture;
 
+	log_debug("%s()::%ld", __func__, __LINE__);
+
 	app_state.current_texture = (app_state.current_texture + 1) % 2;
 	next_texture = app_state.current_texture;
 
-	if (app_state.textures[next_texture] != NULL)
-		return app_state.textures[next_texture];
+	log_debug("next_texture: %d %p", next_texture, app_state.textures[next_texture]);
 
+	if (app_state.textures[next_texture] != NULL) {
+		SDL_Texture *try_texture = app_state.textures[next_texture];
+
+		log_debug("%s()::%ld", __func__, __LINE__);
+		if (surface_and_texture_match(surface, try_texture)) {
+			log_debug("%s()::%ld", __func__, __LINE__);
+			return try_texture;
+		}
+
+		// No match. Destroy this one and create a new one below:
+		SDL_DestroyTexture(try_texture);
+		app_state.textures[next_texture] = NULL;
+		log_debug("%s()::%ld", __func__, __LINE__);
+	}
+
+	log_debug("%s()::%ld s->w: %d s->h: %d", __func__, __LINE__, surface->w, surface->h);
 	app_state.textures[next_texture] = SDL_CreateTexture(
 	    app_state.renderer,
 	    SDL_PIXELFORMAT_RGB24,       // or match surface->format->format
@@ -1371,7 +1433,9 @@ SDL_Texture *get_next_texture(SDL_Surface *surface)
 	    surface->w,
 	    surface->h
 	);
+	log_debug("%s()::%ld", __func__, __LINE__);
 	SDL_UpdateTexture(app_state.textures[next_texture], NULL, surface->pixels, surface->pitch);
+	log_debug("%s()::%ld", __func__, __LINE__);
 
 	return app_state.textures[next_texture];
 }
@@ -1427,7 +1491,7 @@ static void __render_image(image_info_t *img) {
 	//	SDL_DestroyTexture(app_state.texture);
 
 	SDL_Surface *surface = img->surface;
-	log_debug2("about to render surface: %p", surface);
+	log_debug2("about to render surface: %p (%dx%d)", surface, surface->w, surface->h);
 
 	pthread_mutex_lock(&app_state.renderer_mutex);
 	//SDL_Texture *texture = SDL_CreateTexture(app_state.renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STATIC, img->width, img->height);
