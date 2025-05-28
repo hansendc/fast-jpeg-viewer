@@ -664,18 +664,197 @@ void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL
 	dst_rect->h = tex_h;
 }
 
+#include <libavutil/imgutils.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/buffersink.h>
+
+// Build the rotate/scale(/pad) filter string into `buf`
+// buf must be at least 256 bytes.
+static void build_filter_str(enum exif_orientation orient,
+                             int out_w, int out_h,
+                             bool keep_aspect, bool center,
+                             char *buf, size_t buf_len)
+{
+    const char *rot = NULL;
+    switch (orient) {
+        case EXIF_ORIENT_NORMAL:              rot = NULL;                break;
+        case EXIF_ORIENT_MIRROR_HORIZONTAL:   rot = "hflip";             break;
+        case EXIF_ORIENT_ROTATE_180:          rot = "transpose=1,transpose=1"; break;
+        case EXIF_ORIENT_MIRROR_VERTICAL:     rot = "vflip";             break;
+        case EXIF_ORIENT_MIRROR_H_FLIP_270:   rot = "transpose=1,hflip"; break;
+        case EXIF_ORIENT_ROTATE_90_CW:        rot = "transpose=1";       break;
+        case EXIF_ORIENT_MIRROR_H_FLIP_90:    rot = "transpose=2,hflip"; break;
+        case EXIF_ORIENT_ROTATE_270_CW:       rot = "transpose=2";       break;
+        default:                              rot = NULL;                break;
+    }
+
+    if (keep_aspect) {
+        // scale with letterbox/pad
+        // force_original_aspect_ratio=decrease keeps it inside out_w x out_h
+        // pad to exactly out_w x out_h, centering if requested
+        if (rot) {
+            if (center)
+                snprintf(buf, buf_len,
+                         "%s,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
+                         "pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+                         rot, out_w, out_h, out_w, out_h);
+            else
+                snprintf(buf, buf_len,
+                         "%s,scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
+                         "pad=w=%d:h=%d:x=0:y=0:color=black",
+                         rot, out_w, out_h, out_w, out_h);
+        } else {
+            if (center)
+                snprintf(buf, buf_len,
+                         "scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
+                         "pad=w=%d:h=%d:x=(ow-iw)/2:y=(oh-ih)/2:color=black",
+                         out_w, out_h, out_w, out_h);
+            else
+                snprintf(buf, buf_len,
+                         "scale=w=%d:h=%d:force_original_aspect_ratio=decrease,"
+                         "pad=w=%d:h=%d:x=0:y=0:color=black",
+                         out_w, out_h, out_w, out_h);
+        }
+    } else {
+        // simple stretch
+        if (rot)
+            snprintf(buf, buf_len,
+                     "%s,scale=%d:%d", rot, out_w, out_h);
+        else
+            snprintf(buf, buf_len,
+                     "scale=%d:%d", out_w, out_h);
+    }
+}
+
+int transform_surface(SDL_Surface *src,
+                      SDL_Surface *dst,
+                      enum exif_orientation orient,
+                      bool keep_aspect,
+                      bool center)
+{
+    if (!src || !dst) return -1;
+
+    // 1) Map SDL format → AVPixelFormat + bytes_per_pixel
+    enum AVPixelFormat av_fmt;
+    int bpp = src->format->BytesPerPixel;
+    switch (src->format->format) {
+        case SDL_PIXELFORMAT_RGB24:   av_fmt = AV_PIX_FMT_RGB24;  break;
+        case SDL_PIXELFORMAT_BGR24:   av_fmt = AV_PIX_FMT_BGR24;  break;
+        case SDL_PIXELFORMAT_RGBA32:  // same as ABGR8888
+        //case SDL_PIXELFORMAT_ABGR8888:av_fmt = AV_PIX_FMT_ABGR;   break; 
+        case SDL_PIXELFORMAT_ARGB8888:av_fmt = AV_PIX_FMT_BGRA;   break;
+        case SDL_PIXELFORMAT_BGRA8888:av_fmt = AV_PIX_FMT_RGBA;   break;
+        default:
+            SDL_Log("Unsupported SDL fmt %s", SDL_GetPixelFormatName(src->format->format));
+            return -1;
+    }
+    if (bpp * src->w != src->pitch) {
+        SDL_Log("Warning: SDL pitch %d ≠ w*bpp (%d).  Using pitch anyway.", src->pitch, bpp*src->w);
+    }
+
+    // 2) Build filter description
+    char filter_desc[256];
+    build_filter_str(orient, dst->w, dst->h, keep_aspect, center,
+                     filter_desc, sizeof(filter_desc));
+
+    // 3) Create & configure filter graph
+    AVFilterGraph *graph = avfilter_graph_alloc();
+    if (!graph) return -1;
+
+    AVFilterContext *src_ctx = NULL, *sink_ctx = NULL;
+    char args[256];
+    snprintf(args, sizeof(args),
+             "video_size=%dx%d:pix_fmt=%d:time_base=1/1:pixel_aspect=1/1",
+             src->w, src->h, av_fmt);
+
+    if (avfilter_graph_create_filter(&src_ctx,
+            avfilter_get_by_name("buffer"), "in", args, NULL, graph) < 0 ||
+        avfilter_graph_create_filter(&sink_ctx,
+            avfilter_get_by_name("buffersink"), "out", NULL, NULL, graph) < 0)
+    {
+        avfilter_graph_free(&graph);
+        return -1;
+    }
+
+    AVFilterInOut *inputs  = avfilter_inout_alloc();
+    AVFilterInOut *outputs = avfilter_inout_alloc();
+    outputs->name       = av_strdup("in");
+    outputs->filter_ctx = src_ctx;
+    outputs->pad_idx    = 0;
+    outputs->next       = NULL;
+    inputs->name        = av_strdup("out");
+    inputs->filter_ctx  = sink_ctx;
+    inputs->pad_idx     = 0;
+    inputs->next        = NULL;
+
+    if (avfilter_graph_parse_ptr(graph, filter_desc, &inputs, &outputs, NULL) < 0 ||
+        avfilter_graph_config(graph, NULL) < 0)
+    {
+        avfilter_inout_free(&inputs);
+        avfilter_inout_free(&outputs);
+        avfilter_graph_free(&graph);
+        return -1;
+    }
+
+    // 4) Prepare an AVFrame for src
+    AVFrame *inframe  = av_frame_alloc();
+    AVFrame *outframe = av_frame_alloc();
+    inframe->format = av_fmt;
+    inframe->width  = src->w;
+    inframe->height = src->h;
+    // allocate aligned buffer inside inframe
+    if (av_frame_get_buffer(inframe, 1) < 0) goto cleanup;
+
+    // 5) Copy SDL pixels → inframe, row by row
+    if (SDL_MUSTLOCK(src)) SDL_LockSurface(src);
+    for (int y = 0; y < src->h; y++) {
+        uint8_t *sd = (uint8_t*)src->pixels + y * src->pitch;
+        uint8_t *dd =  inframe->data[0]   + y * inframe->linesize[0];
+        memcpy(dd, sd, src->w * bpp);
+    }
+    if (SDL_MUSTLOCK(src)) SDL_UnlockSurface(src);
+
+    // 6) Push & pull through filter graph
+    if (av_buffersrc_add_frame(src_ctx, inframe) < 0) goto cleanup;
+    if (av_buffersink_get_frame(sink_ctx, outframe) < 0) goto cleanup;
+
+    // 7) Validate output buffer size
+    int needed = av_image_get_buffer_size(av_fmt, outframe->width, outframe->height, 1);
+    int have   = dst->h * dst->pitch;
+    if (needed > have) {
+        SDL_Log("Dst buffer too small (%d < %d)", have, needed);
+        goto cleanup;
+    }
+
+    // 8) Copy outframe → dst surface, row by row
+    if (SDL_MUSTLOCK(dst)) SDL_LockSurface(dst);
+    for (int y = 0; y < outframe->height; y++) {
+        uint8_t *sd = outframe->data[0]   + y * outframe->linesize[0];
+        uint8_t *dd = (uint8_t*)dst->pixels + y * dst->pitch;
+        memcpy(dd, sd, dst->w * bpp);
+    }
+    if (SDL_MUSTLOCK(dst)) SDL_UnlockSurface(dst);
+
+    // success
+    av_frame_free(&inframe);
+    av_frame_free(&outframe);
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    avfilter_graph_free(&graph);
+    return 0;
+
+cleanup:
+    av_frame_free(&inframe);
+    av_frame_free(&outframe);
+    avfilter_inout_free(&inputs);
+    avfilter_inout_free(&outputs);
+    avfilter_graph_free(&graph);
+    return -1;
+}
+
 static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pixels)
 {
-	SDL_Surface *image_surface = get_thread_surface(img);
-	/*SDL_CreateRGBSurfaceFrom(
-		pixels,
-		img->width,
-		img->height,
-		24,				// bits per pixel
-		img->width * 3,			// pitch (bytes per row)
-		RGB_MASKS
-	);*/
-
 	/*
 	 * The surface _could_ be any size. But images may be
 	 * higher resolution than the screen. Storing the whole
@@ -685,7 +864,6 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	 * Create a surface the size of the display. Scale the image
 	 * down to fit:
 	 */
-
 	SDL_Surface *screen_surface = get_surface_for_screen();
 		//__alloc_screen_surface();
 	size_t rss_after = get_rss_mb();
@@ -694,14 +872,35 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 		exit(23);
 	}
 
-	if (1) {
+	/*
+	 * There is a per-thread surface into which images get decoded.
+	 * Go find it:
+	 */
+	SDL_Surface *image_surface = get_thread_surface(img);
+
+	/*
+	 * Now, take the 'image_surface' and draw it into the 'screen_surface'.
+	 * This rotates, scales and centers the 'image_surface' during the
+	 * copy over. The 'screen_surface' should be relatively memory-efficient
+	 * and cheap to draw on to the screen.
+	 */
+	if (0) {
+		// Keep this around for testing. This will not rotate the image,
+		// but it might be useful for testing:
 		SDL_Rect dst_rect;// = {0, 0, screen_surface->w, screen_surface->h};
 		fill_centering_rect(image_surface, screen_surface, &dst_rect);
 		SDL_BlitScaled(image_surface, NULL, screen_surface, &dst_rect);
-	} else {
+	} else if (0) {
 		// This requires ffmpeg, but looks a lot nicer than the
 		// SDL_BlitScaled():
 		scale_surface_with_ffmpeg(image_surface, screen_surface);
+	} else {
+		transform_surface(image_surface, screen_surface,
+				//EXIF_ORIENT_NORMAL,
+				img->orientation,
+				//EXIF_ORIENT_ROTATE_180,
+				true,
+				true);
 	}
 
 	return screen_surface;
