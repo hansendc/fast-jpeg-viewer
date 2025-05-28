@@ -1133,14 +1133,52 @@ enum exif_orientation get_exif_orientation(const unsigned char *jpeg_buf, unsign
 	return orientation;
 }
 
+static unsigned char *decode_jpeg_libjpeg_turbo(image_info_t *img)
+{
+	tjhandle tj = NULL;
+	unsigned char *pixels = NULL;
+
+	assert_mutex_locked(&img->mutex);
+
+	tj = tjInitDecompress();
+	if (!tj) {
+		log_debug("tjInitDecompress failed");
+		goto cleanup;
+	}
+
+	int w, h, subsamp, colorspace;
+	if (tjDecompressHeader3(tj, img->jpeg_buf, img->jpeg_size,
+				&w, &h, &subsamp, &colorspace) != 0) {
+		log_debug("tjDecompressHeader3 failed: %s on %s", tjGetErrorStr(), img->filename);
+		goto cleanup;
+	}
+	img->width = w;
+	img->height = h;
+	img->orientation = get_exif_orientation(img->jpeg_buf, img->jpeg_size);
+
+	// get_thread_pixels() depends on width/height being set:
+	pixels = get_thread_pixels(img);
+	if (!pixels) {
+		log_debug("malloc failed for %dx%d", w, h);
+		exit(22);
+		goto cleanup;
+	}
+
+	if (tjDecompress2(tj, img->jpeg_buf, img->jpeg_size, pixels, w, 0, h, TJPF_RGB, TJFLAG_FASTDCT) != 0) {
+		log_debug("tjDecompress2 failed: %s", tjGetErrorStr());
+		goto cleanup;
+	}
+cleanup:
+	if (tj)
+		tjDestroy(tj);
+	return pixels;
+}
 
 static int decode_jpeg(image_info_t *img)
 {
 	unsigned char *jpeg_buf = NULL;
-	unsigned long jpeg_size = 0;
 	unsigned char *dst_buf = NULL;
 	img->decode_start_ts = now_ms();
-	tjhandle tj = NULL;
 	int rv = -1;
 
 	assert_mutex_locked(&img->mutex);
@@ -1152,42 +1190,16 @@ static int decode_jpeg(image_info_t *img)
 	}
 
 	jpeg_buf = img->jpeg_buf;
-	jpeg_size = img->jpeg_size;
 	if (!jpeg_buf) {
 		log_debug("[DECODE] %s() no jpeg_buf %s", __func__, img->filename);
 		goto cleanup;
 	}
 
-	tj = tjInitDecompress();
-	if (!tj) {
-		log_debug("tjInitDecompress failed");
+	dst_buf = decode_jpeg_libjpeg_turbo(img);
+	if (!dst_buf)
 		goto cleanup;
-	}
-
-	int w, h, subsamp, colorspace;
-	if (tjDecompressHeader3(tj, jpeg_buf, jpeg_size, &w, &h, &subsamp, &colorspace) != 0) {
-		log_debug("tjDecompressHeader3 failed: %s on %s", tjGetErrorStr(), img->filename);
-		goto cleanup;
-	}
-	img->width = w;
-	img->height = h;
-	img->orientation = get_exif_orientation(jpeg_buf, jpeg_size);
-
-	// get_thread_pixels() depends on width/height being set:
-	dst_buf = get_thread_pixels(img);
-	if (!dst_buf) {
-		log_debug("malloc failed for %dx%d", w, h);
-		exit(22);
-		goto cleanup;
-	}
-
-	if (tjDecompress2(tj, jpeg_buf, jpeg_size, dst_buf, w, 0, h, TJPF_RGB, TJFLAG_FASTDCT) != 0) {
-		log_debug("tjDecompress2 failed: %s", tjGetErrorStr());
-		goto cleanup;
-	}
 
 	check_img_footprint(img);
-	log_debug2("pixels/surface at decode: %p/%p", dst_buf, img->surface);
 	img->timestamp = now_ms();
 	check_img_footprint(img);
 	// FIXME: this seems a little screwy
@@ -1212,7 +1224,8 @@ static int decode_jpeg(image_info_t *img)
 
 	pthread_cond_broadcast(&img->cond);
 
-	log_debug1("[DECODE] Finished decoding %s (%dx%d) surface: %p", img->filename, w, h, img->surface);
+	log_debug1("[DECODE] Finished decoding %s (%dx%d) surface: %p",
+			img->filename, img->width, img->height, img->surface);
 	rv = 0;
 	img->decode_done_ts = now_ms();
 
@@ -1230,8 +1243,6 @@ cleanup:
 		img->jpeg_buf = NULL;
 		img->jpeg_size = 0;
 	}
-	if (tj)
-		tjDestroy(tj);
 
 	log_debug3("[DECODE] Core end %s", img->filename);
 	return rv;
