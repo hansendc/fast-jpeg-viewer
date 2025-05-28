@@ -4,11 +4,11 @@
  *
  * Debian/Ubuntu Dependencies:
  *
- *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev
+ *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev libswscale-dev
  *
  * Compile with:
  *
- *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm
+ *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm -lswscale -lavutil
  *
  * Run like this:
  *
@@ -572,6 +572,64 @@ unsigned char *get_thread_pixels(image_info_t *img)
 	return get_thread_bufs(img)->pixels;
 }
 
+/* Straight from ChatGPT: */
+
+#include <SDL2/SDL.h>
+#include <libswscale/swscale.h>
+#include <libavutil/imgutils.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/mem.h>
+#include <stdio.h>
+
+int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
+    if (!src || !dst) return -1;
+
+    int srcW = src->w, srcH = src->h;
+    int dstW = dst->w, dstH = dst->h;
+
+    enum AVPixelFormat fmt;
+    if (src->format->BytesPerPixel == 4 && src->format->format == SDL_PIXELFORMAT_RGBA32)
+        fmt = AV_PIX_FMT_RGBA;
+    else if (src->format->BytesPerPixel == 3 && src->format->format == SDL_PIXELFORMAT_RGB24)
+        fmt = AV_PIX_FMT_RGB24;
+    else {
+        fprintf(stderr, "Unsupported SDL pixel format\n");
+        return -1;
+    }
+
+    struct SwsContext *sws_ctx = sws_getContext(
+        srcW, srcH, fmt,
+        dstW, dstH, fmt,
+        SWS_BILINEAR, NULL, NULL, NULL
+    );
+    if (!sws_ctx) {
+        fprintf(stderr, "Failed to create sws context\n");
+        return -1;
+    }
+
+    SDL_LockSurface(src);
+    SDL_LockSurface(dst);
+
+    uint8_t *src_data[4] = { (uint8_t *)src->pixels };
+    int src_linesize[4] = { src->pitch };
+
+    uint8_t *dst_data[4] = { (uint8_t *)dst->pixels };
+    int dst_linesize[4] = { dst->pitch };
+
+    sws_scale(sws_ctx,
+              (const uint8_t * const *)src_data, src_linesize,
+              0, srcH,
+              dst_data, dst_linesize);
+
+    SDL_UnlockSurface(src);
+    SDL_UnlockSurface(dst);
+    sws_freeContext(sws_ctx);
+
+    return 0;
+}
+
+/* end chatgpt hunk */
+
 static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pixels)
 {
 	SDL_Surface *surface1 = get_thread_surface(img);
@@ -602,8 +660,11 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 		exit(23);
 	}
 
-	SDL_BlitScaled(surface1, NULL, surface2, NULL);
-	//SDL_FreeSurface(surface1);
+
+	//SDL_BlitScaled(surface1, NULL, surface2, NULL);
+	// This requires ffmpeg, but looks a lot nicer than the
+	// SDL_BlitScaled():
+	scale_surface_with_ffmpeg(surface1, surface2);
 
 	return surface2;
 }
