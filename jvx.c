@@ -989,6 +989,12 @@ int open_and_map_img(image_info_t *img)
 
 	assert_mutex_locked(&img->mutex);
 
+	/* Just give up quickly for INVALID images: */
+	if (img->state == INVALID) {
+		log_debug2("[DECODE] jpeg in INVALID state: %s", img->filename);
+		return -1;
+	}
+
 	if (img->jpeg_buf) {
 		if (img->state == RECLAIMED) {
 			img->state = MAPPED;
@@ -1860,7 +1866,7 @@ static bool render_image(image_info_t *img)
 
 	// FIXME: do something when images are invalid, like draw an error message
 	if (img->state == INVALID) {
-		log_debug("image %s is invalid", img->filename);
+		log_debug2("image %s is invalid", img->filename);
 		return false;
 	}
 
