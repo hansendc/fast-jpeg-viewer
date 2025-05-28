@@ -1117,7 +1117,7 @@ static int decode_jpeg(image_info_t *img)
 
 	log_debug2("[DECODE] Start %s state: %d", img->filename, img->state);
 	if (img->state == INVALID) {
-		log_debug("[DECODE] INVALID: %s", __func__, img->filename);
+		log_debug2("[DECODE] INVALID: %s", __func__, img->filename);
 		goto cleanup;
 	}
 
@@ -1959,6 +1959,9 @@ static bool decode_and_render_image(image_info_t *img)
 		return false;
 	}
 
+	if (img->state == INVALID)
+		goto out;
+
 	open_and_map_img(img);
 	if (img->state != DECODED)
 		decode_jpeg(img);
@@ -1970,7 +1973,7 @@ static bool decode_and_render_image(image_info_t *img)
 		//enqueue_decode(img);
 		render_ok = render_image(img);
 	}
-
+out:
 	return render_ok;
 }
 
