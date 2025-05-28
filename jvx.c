@@ -363,7 +363,7 @@ static SDL_Surface *__alloc_screen_surface(void)
 	int ret = posix_memalign(&aligned_pixels,
 				alignment,
 				new_height * new_width * BYTES_PER_PIXEL);
- 	if (ret != 0) {
+	if (ret != 0) {
 		perror("posix_memalign");
 		exit(1);
 	}
