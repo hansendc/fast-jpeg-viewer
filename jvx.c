@@ -4,11 +4,11 @@
  *
  * Debian/Ubuntu Dependencies:
  *
- *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev libswscale-dev
+ *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev libswscale-dev libexif-dev
  *
  * Compile with:
  *
- *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm -lswscale -lavutil
+ *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm -lswscale -lavutil -lexif
  *
  * Run like this:
  *
@@ -37,6 +37,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 #include <turbojpeg.h>
+#include <libexif/exif-data.h>
 #include <pthread.h>
 #include <assert.h>
 #include <spawn.h>
@@ -97,6 +98,20 @@ void jvxbreak(void)
 #else
 #define RGB_MASKS 0x0000FF, 0x00FF00, 0xFF0000, 0
 #endif
+
+enum exif_orientation
+{
+    EXIF_ORIENT_UNDEFINED        = 0,
+    EXIF_ORIENT_NORMAL           = 1, // 0° - Normal
+    EXIF_ORIENT_MIRROR_HORIZONTAL= 2, // Flip horizontal
+    EXIF_ORIENT_ROTATE_180       = 3, // Rotate 180°
+    EXIF_ORIENT_MIRROR_VERTICAL  = 4, // Flip vertical
+    EXIF_ORIENT_MIRROR_H_FLIP_270= 5, // Mirror horizontal and rotate 270° CW
+    EXIF_ORIENT_ROTATE_90_CW     = 6, // Rotate 90° CW
+    EXIF_ORIENT_MIRROR_H_FLIP_90 = 7, // Mirror horizontal and rotate 90° CW
+    EXIF_ORIENT_ROTATE_270_CW    = 8, // Rotate 270° CW
+    EXIF_ORIENT_ERROR		 = 9,
+};
 
 #ifndef DEBUG_LEVEL
 #error foo
@@ -254,6 +269,7 @@ typedef struct image
 
 	char filename[MAX_PATH_LEN];
 	int width, height;
+	enum exif_orientation orientation;
 
 	uint64_t readahead_performed;
 	uint64_t i_mem_footprint;
@@ -836,6 +852,32 @@ uint64_t image_memory_footprint(image_info_t *img)
 #define check_img_footprint(x)	\
 	assert(image_memory_footprint(x) == (x)->i_mem_footprint)
 
+enum exif_orientation get_exif_orientation(const unsigned char *jpeg_buf, unsigned int jpeg_size)
+{
+	ExifData *ed = exif_data_new_from_data(jpeg_buf, jpeg_size);
+	if (!ed) {
+		log_debug("[DECODE] Could not parse EXIF data\n");
+		return EXIF_ORIENT_ERROR;
+	}
+
+	ExifEntry *entry = exif_content_get_entry(ed->ifd[EXIF_IFD_0], EXIF_TAG_ORIENTATION);
+	int orientation = EXIF_ORIENT_UNDEFINED;
+
+	if (entry) {
+		// Orientation is stored as a short (2-byte) integer
+		orientation = exif_get_short(entry->data, exif_data_get_byte_order(ed));
+	} else {
+		log_debug4("[DECODE] No orientation tag found\n");
+	}
+
+	exif_data_unref(ed);
+
+	log_debug2("[DECODE] parsed EXIF orientation: %d", orientation);
+
+	return orientation;
+}
+
+
 static int decode_jpeg(image_info_t *img)
 {
 	unsigned char *jpeg_buf = NULL;
@@ -873,6 +915,7 @@ static int decode_jpeg(image_info_t *img)
 	}
 	img->width = w;
 	img->height = h;
+	img->orientation = get_exif_orientation(jpeg_buf, jpeg_size);
 
 	// get_thread_pixels() depends on width/height being set:
 	dst_buf = get_thread_pixels(img);
