@@ -1250,8 +1250,10 @@ static void readahead_once(void *arg) {
 	image_info_t *first_img = NULL;
 
 
-	int max_nr_readaheads = app_state.image_count;
-	max_nr_readaheads = app_state.num_decode_threads * 4;
+	int max_nr_readaheads;// = app_state.image_count;
+	max_nr_readaheads = app_state.num_decode_threads * 8;
+	if (max_nr_readaheads > app_state.image_count)
+		max_nr_readaheads = app_state.image_count;
 
 	log_debug4("readahead_once()");
 	for (int i = 0; i < max_nr_readaheads; i++) {
@@ -1263,24 +1265,42 @@ static void readahead_once(void *arg) {
 			// did the loop wrap all the way around?
 			// if so, no reason to keep doing readahead
 			log_debug1("wrap @ %d", i);
-			exit(66);
 			break;
 		}
-		// If moving the decode_head would run into the
-		// history tail, stop:
+		bool need_reclaim = (memory_footprint() > app_state.memory_limit);
+
 		if (get_future_image_slot(i+1) == app_state.history_tail) {
-			log_debug2("hit tail, ht: %d ci: %d dt: %d dh: %d size: %d",
+			int htlen;
+			if (app_state.current_index >= app_state.history_tail)
+				htlen = app_state.current_index - app_state.history_tail;
+			else
+				htlen = app_state.current_index - (app_state.history_tail - app_state.image_count);
+			log_debug1("hit tail, ht: %d htlen: %d ci: %d dt: %d dh: %d size: %d",
 				  app_state.history_tail,
+				  htlen,
 				  app_state.current_index,
 				  app_state.decode_tail,
 				  app_state.decode_head,
 				  decode_queue_size()
 				  );
-			break;
+			//break;
+			//
+			// Not sure about this, but here's the logic:
+			//
+			// If the readahead hits the history tail then _most_ of the
+			// images are likely in memory. Reset the reclaim spot to where
+			// reclaim is the least likely to impact viewing: right behind
+			// the current image.
+			//
+			// This is probably mostly academic. You have to have _just_
+			// the right cache size for this to be a problem.
+			//
+			// It might need more of a "streaming" mode that it goes into.
+			app_state.history_tail = inc_image_nr(app_state.current_index, -max_nr_readaheads);
 		}
 
 		img_try_readahead(img);
-		if (memory_footprint() > app_state.memory_limit) {
+		if (need_reclaim) {
 			log_debug2("[READAHEAD] over memory limit, clearing and reclaiming: %ld", memory_footprint()/MB);
 			maybe_reclaim_images();
 			//clear_decode_queue("readahead hit mem limit");
