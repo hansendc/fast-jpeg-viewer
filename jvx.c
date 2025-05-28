@@ -646,9 +646,27 @@ int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
 
 /* end chatgpt hunk */
 
+/*
+ * Calculate the coordinate with which 'src_surface' can be drawn on
+ * 'dst_surface' so that it is centered.
+ */
+void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL_Rect *dst_rect)
+{
+	int tex_w = src_surface->w;
+	int tex_h = src_surface->h;
+	float scale = fminf((float)dst_surface->w / tex_w, (float)dst_surface->h / tex_h);
+
+	tex_w *= scale;
+	tex_h *= scale;
+	dst_rect->x = (dst_surface->w - tex_w) / 2;
+	dst_rect->y = (dst_surface->h - tex_h) / 2;
+	dst_rect->w = tex_w;
+	dst_rect->h = tex_h;
+}
+
 static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pixels)
 {
-	SDL_Surface *surface1 = get_thread_surface(img);
+	SDL_Surface *image_surface = get_thread_surface(img);
 	/*SDL_CreateRGBSurfaceFrom(
 		pixels,
 		img->width,
@@ -668,7 +686,7 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	 * down to fit:
 	 */
 
-	SDL_Surface *surface2 = get_surface_for_screen();
+	SDL_Surface *screen_surface = get_surface_for_screen();
 		//__alloc_screen_surface();
 	size_t rss_after = get_rss_mb();
 	if (rss_after > 20000) {
@@ -676,13 +694,17 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 		exit(23);
 	}
 
+	if (1) {
+		SDL_Rect dst_rect;// = {0, 0, screen_surface->w, screen_surface->h};
+		fill_centering_rect(image_surface, screen_surface, &dst_rect);
+		SDL_BlitScaled(image_surface, NULL, screen_surface, &dst_rect);
+	} else {
+		// This requires ffmpeg, but looks a lot nicer than the
+		// SDL_BlitScaled():
+		scale_surface_with_ffmpeg(image_surface, screen_surface);
+	}
 
-	//SDL_BlitScaled(surface1, NULL, surface2, NULL);
-	// This requires ffmpeg, but looks a lot nicer than the
-	// SDL_BlitScaled():
-	scale_surface_with_ffmpeg(surface1, surface2);
-
-	return surface2;
+	return screen_surface;
 }
 
 static void lock_image(image_info_t *img)
@@ -1595,7 +1617,9 @@ static void __render_image(image_info_t *img) {
 	//SDL_UpdateTexture(texture, NULL, img->pixels, img->width * 3);
 	SDL_UpdateTexture(texture, NULL, surface->pixels, surface->pitch);
 	SDL_RenderClear(app_state.renderer);
-	SDL_RenderCopy(app_state.renderer, texture, NULL, &dst_rect);
+	if (0)
+		SDL_RenderCopy(app_state.renderer, texture, NULL, &dst_rect);
+	SDL_RenderCopy(app_state.renderer, texture, NULL, NULL);
 
 	if (app_state.draw_filename)
 		draw_filename(app_state.renderer, img);
