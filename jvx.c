@@ -770,7 +770,7 @@ int open_and_map_img(image_info_t *img)
 		return -1;
 	}
 	if  (jpeg_buf[0] != 0xFF || jpeg_buf[1] != 0xD8) {
-		log_debug("jpeg is INVALID: %s, magic bytes not found", img->filename);
+		log_debug("[DECODE] jpeg is INVALID: %s, magic bytes not found", img->filename);
 		img->state = INVALID;
 		pthread_cond_broadcast(&img->cond);
 		close(fd);
@@ -1583,14 +1583,14 @@ static void wait_for_image(image_info_t *img) {
 	log_debug2("Done waiting for image %s, state: %d", img->filename, img->state);
 }
 
-static void render_image(image_info_t *img)
+static bool render_image(image_info_t *img)
 {
 	uint64_t render_start = now_ms();
 
 	// FIXME: do something when images are invalid, like draw an error message
 	if (img->state == INVALID) {
 		log_debug("image %s is invalid", img->filename);
-		return;
+		return false;
 	}
 
 	//if (!DISABLE_THREADING)
@@ -1632,6 +1632,8 @@ static void render_image(image_info_t *img)
 			readahead_ago,
 			decode_start_ts_ago,
 			decode_done_ts_ago);
+
+	return true;
 }
 
 static void __invalidate_image(image_info_t *img)
@@ -1670,9 +1672,9 @@ static bool __image_file_ok(image_info_t *img)
 static bool decode_and_render_image(image_info_t *img)
 {
 	start_readahead();
-	log_debug2("Changing image %s (%dx%d)", img->filename, img->width, img->height);
-
 	lock_image(img);
+
+	log_debug2("[RENDER] Changing image %s (%dx%d) state: %d", img->filename, img->width, img->height, img->state);
 
 	bool ok = true;
 	if (img->state == INVALID)
@@ -1682,17 +1684,23 @@ static bool decode_and_render_image(image_info_t *img)
 
 	if (!ok) {
 		unlock_image(img);
+		log_debug2("[RENDER] ERROR image not OK %s (%dx%d)", img->filename, img->width, img->height);
 		return false;
 	}
+
 	open_and_map_img(img);
+	if (img->state != DECODED)
+		decode_jpeg(img);
+
 	unlock_image(img);
 
+	bool render_ok = true;
 	if (app_state.gui) {
 		//enqueue_decode(img);
-		render_image(img);
+		render_ok = render_image(img);
 	}
 
-	return true;
+	return render_ok;
 }
 
 #define MAX_FD 20
@@ -1764,19 +1772,22 @@ void sdl_drain_events(void)
 	}
 }
 
-bool process_keypress(void)
+bool fill_keypress_queue(void)
 {
 	SDL_Event e;
-
-	if (!app_state.gui)
-		return false;
-
-	static int first = 1;
-	if (first)
-		init_array(&keypress_queue);
+	bool ret = false;
 
 	/* First, save all the events in a place they are visible: */
-	while (SDL_PollEvent(&e)) {
+	while (true) {
+		int got_event;
+		if (keypress_queue.size == 0) {
+			got_event = SDL_WaitEvent(&e);
+		} else {
+			got_event = SDL_PollEvent(&e);
+		}
+		if (!got_event)
+			break;
+
 		SDL_Event *e2 = malloc(sizeof(e));
 		memcpy(e2, &e, sizeof(e));
 
@@ -1793,10 +1804,27 @@ bool process_keypress(void)
 			free(e2);
 			return false;
 		}
+		ret = true;
 		log_debug5("[KEYPRESS] key: %d", e.type);
 	}
+	return ret;
+}
+
+bool process_keypress(void)
+{
+	if (!app_state.gui)
+		return false;
+
+	static int first = 1;
+	if (first)
+		init_array(&keypress_queue);
+
+	bool got_keypress = fill_keypress_queue();
+	if (!got_keypress)
+		return false;
 
 	/* Now go through all the saved events: */
+	SDL_Event e;
 	SDL_Event *e3;
 	bool suppress_repeats = false;
 	while (pop(&keypress_queue, (void **)&e3)) {
@@ -2151,18 +2179,18 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 			break;
 
 		bool render_ok = decode_and_render_image(img);
-		log_debug2("trying to render %s, ok: %d", img->filename, render_ok);
+		log_debug2("[RENDER] trying to render %s, ok: %d", img->filename, render_ok);
 		if (render_ok) {
 			app_state.nr_rendered++;
 			app_state.force_render = 0;
 			break;
 		}
 
-		log_debug("Could not display %s, trying next image...", img->filename);
+		log_debug("[RENDER] Could not display %s, trying next image...", img->filename);
 		img = NULL;
 		// get_future_image_index() handles direction internally:
 		app_state.current_index = get_future_image_slot(1);
-		log_debug2("now at: %d last delta: %d...", app_state.current_index, app_state.last_delta);
+		log_debug2("[RENDER] now at: %d last delta: %d...", app_state.current_index, app_state.last_delta);
 	}
 
 	last_img = img;
@@ -2207,18 +2235,21 @@ int main(int argc, char **argv)
 		if (DISABLE_THREADING)
 			maybe_reclaim_images();
 
-		// Also increments app_state.current_index
-		int action_happened = process_keypress();
-		if (!action_happened && app_state.slideshow_loop) {
-			app_state.last_delta = 1;
-			app_state.current_index = get_future_image_slot(1);
-		}
-
 		image_info_t *img = try_render_one_image();
 		if (img == NULL) {
 			fprintf(stderr, "ERROR: unable to render any image\n");
 			break;
 		}
+
+		// Also increments app_state.current_index
+		int action_happened = process_keypress();
+		if (!action_happened && app_state.slideshow_loop) {
+			app_state.last_delta = 1;
+			app_state.current_index = get_future_image_slot(1);
+			action_happened = true;
+		}
+		if (!action_happened)
+			continue;
 
 		log_debug2("Done changing image %s (%dx%d)", img->filename, img->width, img->height);
 		if (app_state.nr_rendered % 100 == 0) {
