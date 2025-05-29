@@ -66,7 +66,7 @@
 		pthread_mutex_unlock(_mutex);		\
 } while (0)
 
-void jvxbreak(void)
+static void jvxbreak(void)
 {
 	printf("jvxbreak()\n");
 	exit(99);
@@ -180,7 +180,7 @@ typedef struct {
 } ptr_array;
 
 // Initialize the array
-void init_array(ptr_array* arr) {
+static void init_array(ptr_array* arr) {
 	arr->data = NULL;
 	arr->size = 0;
 	arr->capacity = 0;
@@ -188,7 +188,7 @@ void init_array(ptr_array* arr) {
 }
 
 // Push a value to the end (thread-safe)
-bool push(ptr_array* arr, void *value) {
+static bool push(ptr_array* arr, void *value) {
 	bool success = true;
 	pthread_mutex_lock(&arr->lock);
 
@@ -229,7 +229,7 @@ bool pop(ptr_array* arr, void **out_value) {
 }
 
 // Free the array
-void free_array(ptr_array* arr) {
+static void free_array(ptr_array* arr) {
 	pthread_mutex_lock(&arr->lock);
 	free(arr->data);
 	arr->data = NULL;
@@ -406,7 +406,7 @@ SDL_Surface *get_surface_for_screen(void)
 	return __alloc_screen_surface();
 }
 
-void put_surface_for_screen(SDL_Surface *surface)
+static void put_surface_for_screen(SDL_Surface *surface)
 {
 	bool ok = false;
 
@@ -465,7 +465,7 @@ pthread_mutex_t lru_mutex;
 image_info_t *lru_head = NULL;  // MRU at head
 image_info_t *lru_tail = NULL;  // LRU at tail
 			    //
-void lru_touch(image_info_t *img)
+static void lru_touch(image_info_t *img)
 {
 	pthread_mutex_lock(&lru_mutex);
 
@@ -518,7 +518,7 @@ out:
 	pthread_mutex_unlock(&lru_mutex);
 }
 
-void lru_init(void)
+static void lru_init(void)
 {
 	for (int i = 0; i < app_state.image_count; i++) {
 		app_state.images[i].prev = (i > 0) ? &app_state.images[i - 1] : NULL;
@@ -561,7 +561,7 @@ bool image_matches_surface(image_info_t *img, SDL_Surface *surface)
 	return true;
 }
 
-void blank_surface(SDL_Surface *surface)
+static void blank_surface(SDL_Surface *surface)
 {
 	// Fill it with black to make it ready for another 
 	SDL_FillRect(surface, NULL, SDL_MapRGB(surface->format, 0, 0, 0));
@@ -627,7 +627,7 @@ unsigned char *get_thread_pixels(image_info_t *img)
 #include <libavutil/mem.h>
 #include <stdio.h>
 
-int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
+static int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
     if (!src || !dst) return -1;
 
     int srcW = src->w, srcH = src->h;
@@ -674,7 +674,7 @@ int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
     return 0;
 }
 
-void scale_and_blit_rgb24(SDL_Surface *src_surface, SDL_Surface *dst_surface,
+static void scale_and_blit_rgb24(SDL_Surface *src_surface, SDL_Surface *dst_surface,
                           int dst_x, int dst_y, int scaled_width, int scaled_height)
 {
     if (!src_surface || !dst_surface) {
@@ -736,7 +736,7 @@ void scale_and_blit_rgb24(SDL_Surface *src_surface, SDL_Surface *dst_surface,
  * Calculate the coordinate with which 'src_surface' can be drawn on
  * 'dst_surface' so that it is centered.
  */
-void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL_Rect *dst_rect)
+static void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL_Rect *dst_rect)
 {
 	int tex_w = src_surface->w;
 	int tex_h = src_surface->h;
@@ -750,7 +750,7 @@ void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL
 	dst_rect->h = tex_h;
 }
 
-void scale_surface(SDL_Surface *src, SDL_Surface *dst, bool center)
+static void scale_surface(SDL_Surface *src, SDL_Surface *dst, bool center)
 {
 	// Without centering, just fill the whole surface:
 	SDL_Rect dst_rect = {0, 0, dst->w, dst->h};
@@ -830,7 +830,7 @@ static void build_filter_str(enum exif_orientation orient,
     }
 }
 
-int transform_surface(SDL_Surface *src,
+static int transform_surface(SDL_Surface *src,
                       SDL_Surface *dst,
                       enum exif_orientation orient,
                       bool keep_aspect,
@@ -1098,7 +1098,7 @@ size_t fd_get_file_size(int fd)
 	return st.st_size;
 }
 
-int open_and_map_img(image_info_t *img)
+static int open_and_map_img(image_info_t *img)
 {
 	unsigned char jpeg_buf[2];
 	int ret;
@@ -1225,7 +1225,7 @@ enum exif_orientation get_exif_orientation(const unsigned char *jpeg_buf, unsign
 	return orientation;
 }
 
-int exif_to_tjxop(enum exif_orientation orient)
+static int exif_to_tjxop(enum exif_orientation orient)
 {
 	/*
 	 * Note: not all JPEGs have EXIF information, much less a valid
@@ -1438,7 +1438,7 @@ cleanup:
 	return rv;
 }
 
-int inc_image_nr(int nr, int by)
+static int inc_image_nr(int nr, int by)
 {
 	nr += by;
 	if (nr < 0)
@@ -1448,7 +1448,7 @@ int inc_image_nr(int nr, int by)
 }
 
 
-void img_zap_file_mapping(image_info_t *img)
+static void img_zap_file_mapping(image_info_t *img)
 {
 	munmap(img->jpeg_buf, img->jpeg_size);
 	img->jpeg_buf = NULL;
@@ -1646,7 +1646,7 @@ bool moving_backward(void)
 	return app_state.last_delta < 0;
 }
 
-int decode_queue_size(void)
+static int decode_queue_size(void)
 {
 	int ret;
 	if (moving_forward()) {
@@ -2248,11 +2248,11 @@ char **get_all_files_from_args(int argc, char **argv, size_t *out_count)
 }
 
 // FIXME: change ordering??
-void run_action_with_replace(int action_nr, char *filename);
+static void run_action_with_replace(int action_nr, char *filename);
 
 ptr_array keypress_queue;
 
-void sdl_drain_events(void)
+static void sdl_drain_events(void)
 {
 	// Drain all pending keyboard events to avoid rapid repeated input
 	SDL_Event evt_drain;
@@ -2411,7 +2411,7 @@ out:
 }
 
 extern char **environ;
-int run_command(char *const argv[])
+static int run_command(char *const argv[])
 {
 	pid_t pid;
 	int status;
@@ -2438,7 +2438,7 @@ struct action_key
 
 struct action_key action_keys[NR_ACTION_KEYS];
 
-void add_action_arg(int nr, const char *new_arg)
+static void add_action_arg(int nr, const char *new_arg)
 {
 	struct action_key *a;
 	if (nr >= NR_ACTION_KEYS)
@@ -2465,7 +2465,7 @@ void add_action_arg(int nr, const char *new_arg)
 	a->arguments = new_arguments;
 }
 
-void finalize_action_keys(void)
+static void finalize_action_keys(void)
 {
 	for (int i = 0; i < NR_ACTION_KEYS; i++) {
 		struct action_key *a = &action_keys[i];
@@ -2482,7 +2482,7 @@ void finalize_action_keys(void)
  * is performed anywhere. If you want it, run a script and do it
  * in there.
  */
-void run_action_with_replace(int action_nr, char *filename)
+static void run_action_with_replace(int action_nr, char *filename)
 {
 	if (action_nr >= NR_ACTION_KEYS)
 		return;
@@ -2510,7 +2510,7 @@ void run_action_with_replace(int action_nr, char *filename)
 	free(arg_copy);
 }
 
-void *dave_malloc(size_t size)
+static void *dave_malloc(size_t size)
 {
 	//void *ret = malloc(size);
 	int alignment = 4096;
@@ -2521,25 +2521,25 @@ void *dave_malloc(size_t size)
 	log_debug("%s() size: %ld err: %d ptr: %p->%p", __func__, size, err, ret, ret+size);
 	return ret;
 }
-void dave_free(void *ptr)
+static void dave_free(void *ptr)
 {
 	log_debug("%s() ptr: %p", __func__, ptr);
 	free(ptr);
 }
-void *dave_calloc(size_t nmemb, size_t size)
+static void *dave_calloc(size_t nmemb, size_t size)
 {
 	void *ret = calloc(nmemb, size);
 	log_debug("%s() nmemb: %ld size: %ld ptr: %p", __func__, nmemb, size);
 	return ret;
 }
-void *dave_realloc(void *ptr, size_t size)
+static void *dave_realloc(void *ptr, size_t size)
 {
 	void *ret = realloc(ptr, size);
 	log_debug("%s() ptr: %p size: %ld old: %p new: %p", __func__, ptr, size, ptr, ret);
 	return ret;
 }
 
-void signal_handler_init(void)
+static void signal_handler_init(void)
 {
 	signal(SIGINT, signal_handler);
 	signal(SIGUSR1, signal_handler);
@@ -2548,7 +2548,7 @@ void signal_handler_init(void)
 }
 
 
-void process_command_line_args(int argc, char **argv)
+static void process_command_line_args(int argc, char **argv)
 {
 	static struct option long_opts[] = {
 		{"action0", required_argument, 0, '0'},
@@ -2621,13 +2621,14 @@ size_t init_image_list(int argc, char **argv)
 	return file_count;
 }
 
-void gui_init(void)
+static void gui_init(void)
 {
 	app_state.gui = 1;
 	if (!app_state.gui)
 		return;
 
-	//SDL_SetMemoryFunctions(dave_malloc, dave_calloc,dave_realloc, dave_free);
+	if (0)
+		SDL_SetMemoryFunctions(dave_malloc, dave_calloc,dave_realloc, dave_free);
 	SDL_Init(SDL_INIT_VIDEO);
 	TTF_Init();
 	SDL_GetCurrentDisplayMode(0, &(SDL_DisplayMode){0});
@@ -2667,7 +2668,7 @@ void gui_init(void)
 	}
 }
 
-void init_decode_threads(void)
+static void init_decode_threads(void)
 {
 	pthread_mutex_init(&app_state.decode_queue_mutex, NULL);
 	pthread_cond_init(&app_state.decode_queue_cond, NULL);
@@ -2679,7 +2680,7 @@ void init_decode_threads(void)
 			pthread_create(&app_state.decode_threads[i], NULL, decode_thread_func, NULL);
 }
 
-void init_readahead_thread(void)
+static void init_readahead_thread(void)
 {
 	app_state.need_readahead = 1;
 	pthread_mutex_init(&app_state.readahead_queue_mutex, NULL);
@@ -2721,7 +2722,7 @@ image_info_t *try_render_one_image(void)//image_info_t *last_img)
 }
 
 // Makes sure the main loop doesn't run more than once every 30ms
-void loop_slowdown(uint64_t loop_start_ts)
+static void loop_slowdown(uint64_t loop_start_ts)
 {
 	uint64_t loop_duration_ts = now_ms() - loop_start_ts;
 	uint64_t min_loop_len_ms = 30;
@@ -2792,7 +2793,8 @@ int main(int argc, char **argv)
 			continue;
 
 		loop_slowdown(loop_start_ts);
-		//sdl_drain_events();
+		if (0)
+			sdl_drain_events();
 	}
 
 	app_state.stop_decode_threads = 1;
