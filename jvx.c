@@ -668,6 +668,62 @@ int scale_surface_with_ffmpeg(SDL_Surface *src, SDL_Surface *dst) {
     return 0;
 }
 
+void scale_and_blit_rgb24(SDL_Surface *src_surface, SDL_Surface *dst_surface,
+                          int dst_x, int dst_y, int scaled_width, int scaled_height)
+{
+    if (!src_surface || !dst_surface) {
+        fprintf(stderr, "Invalid surfaces\n");
+        return;
+    }
+
+    // Source and destination pixel formats must be RGB24
+    if (src_surface->format->format != SDL_PIXELFORMAT_RGB24 ||
+        dst_surface->format->format != SDL_PIXELFORMAT_RGB24) {
+        fprintf(stderr, "Surfaces must be in RGB24 format\n");
+        return;
+    }
+
+    // Set up SwsContext
+    struct SwsContext *sws_ctx = sws_getContext(
+        src_surface->w, src_surface->h, AV_PIX_FMT_RGB24,        // source
+        scaled_width, scaled_height, AV_PIX_FMT_RGB24,           // dest (scaled size)
+        SWS_BILINEAR, NULL, NULL, NULL);
+
+    if (!sws_ctx) {
+        fprintf(stderr, "Failed to create SwsContext\n");
+        return;
+    }
+
+    // Lock surfaces if needed
+    SDL_LockSurface(src_surface);
+    SDL_LockSurface(dst_surface);
+
+    // Source data
+    uint8_t *src_data[4] = { (uint8_t *)src_surface->pixels, NULL, NULL, NULL };
+    int src_stride[4] = { src_surface->pitch, 0, 0, 0 };
+
+    // Compute destination pointer offset for (dst_x, dst_y)
+    int bytes_per_pixel = 3; // RGB24
+    uint8_t *dst_offset = (uint8_t *)dst_surface->pixels
+                        + dst_y * dst_surface->pitch
+                        + dst_x * bytes_per_pixel;
+
+    // Destination data
+    uint8_t *dst_data[4] = { dst_offset, NULL, NULL, NULL };
+    int dst_stride[4] = { dst_surface->pitch, 0, 0, 0 };
+
+    // Scale and place the image
+    sws_scale(sws_ctx,
+              (const uint8_t * const *)src_data, src_stride,
+              0, src_surface->h,
+              dst_data, dst_stride);
+
+    SDL_UnlockSurface(src_surface);
+    SDL_UnlockSurface(dst_surface);
+
+    sws_freeContext(sws_ctx);
+}
+
 /* end chatgpt hunk */
 
 /*
@@ -687,6 +743,23 @@ void fill_centering_rect(SDL_Surface *src_surface, SDL_Surface *dst_surface, SDL
 	dst_rect->w = tex_w;
 	dst_rect->h = tex_h;
 }
+
+void scale_surface(SDL_Surface *src, SDL_Surface *dst, bool center)
+{
+	// Without centering, just fill the whole surface:
+	SDL_Rect dst_rect = {0, 0, dst->w, dst->h};
+
+	// If centering, adjust the destination size and target coordinates:
+	if (center)
+		fill_centering_rect(src, dst, &dst_rect);
+
+	scale_and_blit_rgb24(src, dst,
+				dst_rect.x,
+				dst_rect.y,
+				dst_rect.w,
+				dst_rect.h);
+}
+
 
 #include <libavutil/imgutils.h>
 #include <libavfilter/avfilter.h>
@@ -913,17 +986,28 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	 * copy over. The 'screen_surface' should be relatively memory-efficient
 	 * and cheap to draw on to the screen.
 	 */
-	if (0) {
+	int s = 4;
+	if (s == 1) {
 		// Keep this around for testing. This will not rotate the image,
 		// but it might be useful for testing:
 		SDL_Rect dst_rect;// = {0, 0, screen_surface->w, screen_surface->h};
 		fill_centering_rect(image_surface, screen_surface, &dst_rect);
 		SDL_BlitScaled(image_surface, NULL, screen_surface, &dst_rect);
-	} else if (0) {
+	} else if (s == 2) {
 		// This requires ffmpeg, but looks a lot nicer than the
 		// SDL_BlitScaled():
 		scale_surface_with_ffmpeg(image_surface, screen_surface);
+	} else if (s == 3) {
+		// For testing, place the image at 200x200 and scale it
+		// to 500x500:
+		scale_and_blit_rgb24(image_surface, screen_surface,
+				200, 200, 500, 500);
+	} else if (s == 4) {
+		// The best one!
+		bool centering = true;
+		scale_surface(image_surface, screen_surface, centering);
 	} else {
+		// libavutils is garbage from what I can tell:
 		transform_surface(image_surface, screen_surface,
 				//EXIF_ORIENT_NORMAL,
 				img->orientation,
@@ -1133,6 +1217,79 @@ enum exif_orientation get_exif_orientation(const unsigned char *jpeg_buf, unsign
 	return orientation;
 }
 
+int exif_to_tjxop(enum exif_orientation orient)
+{
+	/*
+	 * Note: not all JPEGs have EXIF information, much less a valid
+	 * rotation tag. It's perfectly fine for this to be UNDEFINED:
+	 */
+	switch (orient) {
+	case EXIF_ORIENT_UNDEFINED:
+	case EXIF_ORIENT_NORMAL:		return TJXOP_NONE; // No transform needed
+	case EXIF_ORIENT_MIRROR_HORIZONTAL: 	return TJXOP_HFLIP;
+	case EXIF_ORIENT_ROTATE_180:		return TJXOP_ROT180;
+	case EXIF_ORIENT_MIRROR_VERTICAL:	return TJXOP_VFLIP;
+	case EXIF_ORIENT_MIRROR_H_FLIP_270:	return TJXOP_TRANSVERSE;
+	case EXIF_ORIENT_ROTATE_90_CW:		return TJXOP_ROT90;
+	case EXIF_ORIENT_MIRROR_H_FLIP_90:	return TJXOP_TRANSPOSE;
+	case EXIF_ORIENT_ROTATE_270_CW:		return TJXOP_ROT270;
+	case EXIF_ORIENT_ERROR:			return -2;
+	}
+	return -3;
+}
+
+static unsigned char *decode_jpeg_libjpeg_turbo2(image_info_t *img)
+{
+	unsigned char* rotBuf = NULL;
+	unsigned long rotSize = 0;
+	int err = 0;
+
+	tjtransform xform = {0};
+	xform.op = exif_to_tjxop(img->orientation);
+	bool rotate = (xform.op >= TJXOP_NONE);
+	if (rotate) {
+		tjhandle th = tjInitTransform();
+		//xform.op = TJXOP_ROT90;
+		err = tjTransform(th, img->jpeg_buf, img->jpeg_size, 1, &rotBuf, &rotSize, &xform, TJFLAG_ACCURATEDCT);
+		if (err)
+			log_debug("[ERROR] decode: %s", tjGetErrorStr());
+		tjDestroy(th);
+	} else {
+		rotBuf = img->jpeg_buf;
+		rotSize = img->jpeg_size;
+	}
+	// --- Decompress with scaling ---
+	tjhandle decomp = tjInitDecompress();
+	int w, h, subsamp, colorspace;
+	err = tjDecompressHeader3(decomp, rotBuf, rotSize, &w, &h, &subsamp, &colorspace);
+	if (err)
+		log_debug("[ERROR] decode: %s", tjGetErrorStr());
+
+	//tjscalingfactor sf = {1, 8}; // 1/8 scale
+	tjscalingfactor sf = {1, 1};
+	int scaledW = TJSCALED(w, sf);
+	int scaledH = TJSCALED(h, sf);
+
+	img->width = w;
+	img->height = h;
+	img->width = scaledW;
+	img->height = scaledH;
+
+	unsigned char* pixels = get_thread_pixels(img);
+
+	err = tjDecompress2(decomp, rotBuf, rotSize,
+			   pixels, scaledW, 0, scaledH,
+			   TJPF_RGB, TJFLAG_FASTDCT);
+	if (err)
+		log_debug("[ERROR] decode: %s", tjGetErrorStr());
+
+	tjDestroy(decomp);
+	if (rotate)
+		tjFree(rotBuf);
+
+	return rotBuf;
+}
+
 static unsigned char *decode_jpeg_libjpeg_turbo(image_info_t *img)
 {
 	tjhandle tj = NULL;
@@ -1154,7 +1311,6 @@ static unsigned char *decode_jpeg_libjpeg_turbo(image_info_t *img)
 	}
 	img->width = w;
 	img->height = h;
-	img->orientation = get_exif_orientation(img->jpeg_buf, img->jpeg_size);
 
 	// get_thread_pixels() depends on width/height being set:
 	pixels = get_thread_pixels(img);
@@ -1195,7 +1351,11 @@ static int decode_jpeg(image_info_t *img)
 		goto cleanup;
 	}
 
-	dst_buf = decode_jpeg_libjpeg_turbo(img);
+	img->orientation = get_exif_orientation(img->jpeg_buf, img->jpeg_size);
+	if (0)
+		dst_buf = decode_jpeg_libjpeg_turbo(img);
+	else
+		dst_buf = decode_jpeg_libjpeg_turbo2(img);
 	if (!dst_buf)
 		goto cleanup;
 
@@ -1230,7 +1390,7 @@ static int decode_jpeg(image_info_t *img)
 	img->decode_done_ts = now_ms();
 
 	uint64_t decode_len_ms = img->decode_done_ts - img->decode_start_ts;
-	if (decode_len_ms > 500)
+	if (decode_len_ms > 1000)
 		log_debug("long decode for %s: %ld ms", img->filename, decode_len_ms);
 cleanup:
 	//if (dst_buf)
@@ -2095,7 +2255,16 @@ bool fill_keypress_queue(void)
 	/* First, save all the events in a place they are visible: */
 	while (true) {
 		int got_event;
-		if (keypress_queue.size == 0) {
+		bool should_wait = false;
+
+		/* Wait for the _first_ keypress: */
+		if (keypress_queue.size == 0)
+			should_wait = true;
+		/* Never wait for key presses in slideshow mode: */
+		if (app_state.slideshow_loop)
+			should_wait = false;
+
+		if (should_wait) {
 			got_event = SDL_WaitEvent(&e);
 		} else {
 			got_event = SDL_PollEvent(&e);
