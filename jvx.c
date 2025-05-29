@@ -561,6 +561,12 @@ bool image_matches_surface(image_info_t *img, SDL_Surface *surface)
 	return true;
 }
 
+void blank_surface(SDL_Surface *surface)
+{
+	// Fill it with black to make it ready for another 
+	SDL_FillRect(surface, NULL, SDL_MapRGB(surface->format, 0, 0, 0));
+}
+
 // Get per-thread cached SDL_Surface
 //
 // FIXME: free this at exit
@@ -967,7 +973,9 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	 * down to fit:
 	 */
 	SDL_Surface *screen_surface = get_surface_for_screen();
-		//__alloc_screen_surface();
+	// Make sure that if it being reused that it is blanked out:
+	blank_surface(screen_surface);
+
 	size_t rss_after = get_rss_mb();
 	if (rss_after > 20000) {
 		log_debug("Rss too large: %ld", rss_after);
