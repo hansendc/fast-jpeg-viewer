@@ -4,11 +4,11 @@
  *
  * Debian/Ubuntu Dependencies:
  *
- *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev libswscale-dev libexif-dev
+ *    apt-get install libsdl2-dev libsdl2-ttf-dev libturbojpeg0-dev libc6-dev libswscale-dev libexif-dev libavfilter-dev
  *
  * Compile with:
  *
- *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm -lswscale -lavutil -lexif
+ *    gcc  -DDEBUG_LEVEL=1 -Wall -Werror -g -o jvx jvx.c -lturbojpeg -lSDL2 -lSDL2_ttf -lm -lswscale -lavutil -lexif -lavfilter
  *
  * Run like this:
  *
