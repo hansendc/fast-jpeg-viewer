@@ -461,75 +461,6 @@ static int64_t memory_footprint(void)
 	return atomic_load(&app_state.memory_footprint);
 }
 
-pthread_mutex_t lru_mutex;
-image_info_t *lru_head = NULL;  // MRU at head
-image_info_t *lru_tail = NULL;  // LRU at tail
-			    //
-static void lru_touch(image_info_t *img)
-{
-	pthread_mutex_lock(&lru_mutex);
-
-	// If already at head, do nothing
-	if (img == lru_head)
-		goto out;
-
-	// Remove from list
-	if (img->prev) img->prev->next = img->next;
-	if (img->next) img->next->prev = img->prev;
-	if (img == lru_tail) lru_tail = img->prev;
-
-	// Insert at head
-	img->prev = NULL;
-	img->next = lru_head;
-	if (lru_head) lru_head->prev = img;
-	lru_head = img;
-
-	if (!lru_tail) lru_tail = img;
-out:
-	pthread_mutex_unlock(&lru_mutex);
-}
-
-void lru_demote_to_tail(image_info_t *entry) {
-	pthread_mutex_lock(&lru_mutex);
-
-       	// already at tail ?
-	if (lru_tail == entry)
-		goto out;
-
-	// Unlink from current position
-	if (entry->prev) entry->prev->next = entry->next;
-	if (entry->next) entry->next->prev = entry->prev;
-
-	// Update head if needed
-	if (lru_head == entry)
-		lru_head = entry->next;
-
-	// Append at tail
-	entry->prev = lru_tail;
-	entry->next = NULL;
-	if (lru_tail)
-		lru_tail->next = entry;
-	lru_tail = entry;
-
-	// If list was empty, set head too
-	if (!lru_head)
-		lru_head = entry;
-out:	
-	pthread_mutex_unlock(&lru_mutex);
-}
-
-static void lru_init(void)
-{
-	for (int i = 0; i < app_state.image_count; i++) {
-		app_state.images[i].prev = (i > 0) ? &app_state.images[i - 1] : NULL;
-		app_state.images[i].next = (i < app_state.image_count - 1) ? &app_state.images[i + 1] : NULL;
-	}
-	lru_head = &app_state.images[0];
-	lru_tail = &app_state.images[app_state.image_count - 1];
-	pthread_mutex_init(&lru_mutex, NULL);
-}
-
-
 // Thread-local storage key
 static pthread_key_t pixels_key;
 static pthread_once_t pixels_key_once = PTHREAD_ONCE_INIT;
@@ -1540,33 +1471,6 @@ static void __check_memory_footprint(const char *func, int line)
 }
 #define check_memory_footprint() __check_memory_footprint(__func__,__LINE__)
 
-image_info_t *find_oldest_image(uint64_t *total_bytes)
-{
-	return lru_tail;
-
-	// FIXME remove old slow loop from before LRU:
-	image_info_t *ret = NULL;
-	uint64_t byte_count = 0;
-
-	for (int i = 0; i < app_state.image_count; i++) {
-		image_info_t *img = &app_state.images[i];
-
-		if (image_memory_footprint(img) == 0)
-			continue;
-
-		byte_count += image_memory_footprint(img);
-
-		if (img->rendering)
-			continue;
-
-		if (ret == NULL ||
-		    ret->timestamp > img->timestamp)
-			ret = img;
-	}
-	*total_bytes = byte_count;
-	return ret;
-}
-
 static void maybe_reclaim_images(void)
 {
 	int retries = 0;
@@ -1582,8 +1486,6 @@ retry:
 		}
 
 		image_info_t *img = &app_state.images[app_state.history_tail];
-		if (0)
-			img = find_oldest_image(&memory_footprint_slow);
 		uint64_t f1 = image_memory_footprint(img);
 		check_memory_footprint();
 		int failed = pthread_mutex_trylock(&img->mutex);
@@ -2091,8 +1993,6 @@ static bool render_image(image_info_t *img)
 	// Lock the image during rendering. Prevents reclaim among other things
 	img->verbose_unlock = 1;
 
-	if (0)
-		lru_touch(img);
 	lock_image(img);
 	img->verbose_unlock = 0;
 	if (!image_ready_to_render(img->state))
@@ -2743,7 +2643,6 @@ int main(int argc, char **argv)
 	app_state.last_delta = 1;
 	app_state.runtime_debugging = 0;
 	app_state.big_skip = DEFAULT_BIG_SKIP;
-	lru_init();
 	check_memory_footprint();
 
 	gui_init();
