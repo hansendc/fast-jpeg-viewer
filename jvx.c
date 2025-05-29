@@ -2645,6 +2645,18 @@ void gui_init(void)
 	app_state.renderer = SDL_CreateRenderer(app_state.window, -1, SDL_RENDERER_ACCELERATED);
 	app_state.font = TTF_OpenFont("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24);
 	app_state.current_texture = 0;
+
+	SDL_RendererInfo info;
+	if (SDL_GetRendererInfo(app_state.renderer, &info) == 0) {
+		log_debug3("Renderer name: %s", info.name);
+		log_debug3("Supports %d texture formats:", info.num_texture_formats);
+		for (Uint32 i = 0; i < info.num_texture_formats; ++i) {
+			log_debug3("  Format %d: %s", i,
+			SDL_GetPixelFormatName(info.texture_formats[i]));
+		}
+	} else {
+		log_debug("SDL_GetRendererInfo failed: %s", SDL_GetError());
+	}
 }
 
 void init_decode_threads(void)
