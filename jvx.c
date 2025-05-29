@@ -23,7 +23,7 @@
  *  * Automatically tune memory footprint to the size of the system
  *  * Add an option to further scale images down to less than screen resolution
  *    to take less memory and draw faster.
- *  * Make surfaces smaller for small images
+ *  * Remove avutil code (it's buggy as hell)
  *
  */
 
