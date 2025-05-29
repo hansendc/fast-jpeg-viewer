@@ -1294,8 +1294,6 @@ static unsigned char *decode_jpeg_libjpeg_turbo2(image_info_t *img)
 	int scaledW = TJSCALED(w, sf);
 	int scaledH = TJSCALED(h, sf);
 
-	img->width = w;
-	img->height = h;
 	img->width = scaledW;
 	img->height = scaledH;
 
