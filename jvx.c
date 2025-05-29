@@ -573,7 +573,7 @@ struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
        		return b;
 
 	if (b) {
-		log_debug("decoder surface cache mismatch, reallocating...");
+		log_debug2("[DECODE] surface cache mismatch, reallocating...");
 		// surface is the wrong size, reallocate it
 		//
 		// FIXME: this could be made much more intelligent by keeping
@@ -596,7 +596,7 @@ struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
 		RGB_MASKS
 	);
 
-	log_debug("created surface %p for img: %s (%dx%d)", b->surface, img->filename, img->width, img->height);
+	log_debug2("[DECODE] created surface %p for img: %s (%dx%d)", b->surface, img->filename, img->width, img->height);
 
 	pthread_setspecific(pixels_key, b);
 
