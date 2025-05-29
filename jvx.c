@@ -1246,7 +1246,7 @@ static unsigned char *decode_jpeg_libjpeg_turbo2(image_info_t *img)
 
 	tjtransform xform = {0};
 	xform.op = exif_to_tjxop(img->orientation);
-	bool rotate = (xform.op >= TJXOP_NONE);
+	bool rotate = (xform.op > TJXOP_NONE);
 	if (rotate) {
 		tjhandle th = tjInitTransform();
 		//xform.op = TJXOP_ROT90;
