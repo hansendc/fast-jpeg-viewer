@@ -1238,6 +1238,27 @@ int exif_to_tjxop(enum exif_orientation orient)
 	return -3;
 }
 
+static bool double_sized(int w, int h)
+{
+       if (w/2 < app_state.screen_width)
+	       return false;
+       if (h/2 < app_state.screen_height)
+	       return false;
+
+       // Yes, the w/h can be shrunk by half and
+       // still fit on the screen.
+       return true;
+}
+
+static void adjust_scaling_for_screen(int w, int h, tjscalingfactor *sf)
+{
+       while (double_sized(w, h)) {
+	       w /= 2;
+	       h /= 2;
+	       sf->denom *= 2;
+       }
+}
+
 static unsigned char *decode_jpeg_libjpeg_turbo2(image_info_t *img)
 {
 	unsigned char* rotBuf = NULL;
@@ -1267,6 +1288,9 @@ static unsigned char *decode_jpeg_libjpeg_turbo2(image_info_t *img)
 
 	//tjscalingfactor sf = {1, 8}; // 1/8 scale
 	tjscalingfactor sf = {1, 1};
+	adjust_scaling_for_screen(w, h, &sf);
+	if (sf.denom != 1)
+		log_debug4("scaling factor for %s %dx%d is 1/%d", img->filename, w, h, sf.denom);
 	int scaledW = TJSCALED(w, sf);
 	int scaledH = TJSCALED(h, sf);
 
