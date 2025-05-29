@@ -1997,16 +1997,6 @@ static void __render_image(image_info_t *img) {
 		return;
 	}
 
-	int tex_w = img->width;
-	int tex_h = img->height;
-	float scale = fminf((float)app_state.screen_width / tex_w, (float)app_state.screen_height / tex_h);
-	tex_w *= scale;
-	tex_h *= scale;
-	SDL_Rect dst_rect = {
-		(app_state.screen_width - tex_w) / 2,
-		(app_state.screen_height - tex_h) / 2,
-		tex_w, tex_h
-	};
 	log_debug2("Rendering image %s (%dx%d)", img->filename, img->width, img->height);
 
 	//if (app_state.texture)
@@ -2022,8 +2012,6 @@ static void __render_image(image_info_t *img) {
 	//SDL_UpdateTexture(texture, NULL, img->pixels, img->width * 3);
 	SDL_UpdateTexture(texture, NULL, surface->pixels, surface->pitch);
 	SDL_RenderClear(app_state.renderer);
-	if (0)
-		SDL_RenderCopy(app_state.renderer, texture, NULL, &dst_rect);
 	SDL_RenderCopy(app_state.renderer, texture, NULL, NULL);
 
 	if (app_state.draw_filename)
