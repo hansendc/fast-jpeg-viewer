@@ -211,7 +211,7 @@ unlock:
 }
 
 // Pop a value from the end (thread-safe)
-bool pop(ptr_array* arr, void **out_value) {
+static bool pop(ptr_array* arr, void **out_value) {
 	bool success = true;
 	pthread_mutex_lock(&arr->lock);
 
@@ -390,7 +390,7 @@ static SDL_Surface *__alloc_screen_surface(void)
 
 ptr_array surface_cache;
 
-SDL_Surface *get_surface_for_screen(void)
+static SDL_Surface *get_surface_for_screen(void)
 {
 	SDL_Surface *surface;
 	void *ptr;
@@ -420,7 +420,7 @@ static void put_surface_for_screen(SDL_Surface *surface)
 	log_debug4("pushed surface: %p size: %d", surface, surface_cache.size);
 }
 
-size_t get_rss_mb()
+static size_t get_rss_mb()
 {
 	FILE *f = fopen("/proc/self/statm", "r");
 	if (!f)
@@ -483,7 +483,7 @@ static void make_pixels_key() {
     pthread_key_create(&pixels_key, free_pixels);
 }
 
-bool image_matches_surface(image_info_t *img, SDL_Surface *surface)
+static bool image_matches_surface(image_info_t *img, SDL_Surface *surface)
 {
 	if (img->width != surface->w)
 		return false;
@@ -540,11 +540,12 @@ struct decoder_thread_bufs* get_thread_bufs(image_info_t *img)
 	return b;
 }
 
-SDL_Surface *get_thread_surface(image_info_t *img)
+static SDL_Surface *get_thread_surface(image_info_t *img)
 {
 	return get_thread_bufs(img)->surface;
 }
-unsigned char *get_thread_pixels(image_info_t *img)
+
+static unsigned char *get_thread_pixels(image_info_t *img)
 {
 	return get_thread_bufs(img)->pixels;
 }
@@ -1018,7 +1019,7 @@ static void check_mincore(image_info_t *img, unsigned char *jpeg_buf, unsigned l
 	free(vec);
 }
 
-size_t fd_get_file_size(int fd)
+static size_t fd_get_file_size(int fd)
 {
 	struct stat st;
 	if (fstat(fd, &st) != 0) {
@@ -1386,7 +1387,7 @@ static void img_zap_file_mapping(image_info_t *img)
 	img->jpeg_size = 0;
 }
 
-bool try_free_image_resources(image_info_t *img)
+static bool try_free_image_resources(image_info_t *img)
 {
 	bool ret = false;
 
@@ -1539,11 +1540,11 @@ retry:
 	}
 }
 
-bool moving_forward(void)
+static bool moving_forward(void)
 {
 	return app_state.last_delta > 0;
 }
-bool moving_backward(void)
+static bool moving_backward(void)
 {
 	return app_state.last_delta < 0;
 }
@@ -1840,7 +1841,7 @@ static void start_readahead(void)
 	pthread_mutex_unlock(&app_state.readahead_queue_mutex);
 }
 
-bool surface_and_texture_match(SDL_Surface *surface,
+static bool surface_and_texture_match(SDL_Surface *surface,
 			       SDL_Texture *texture)
 {
 	int t_width;
@@ -1862,7 +1863,7 @@ bool surface_and_texture_match(SDL_Surface *surface,
 	return true;
 }
 
-SDL_Texture *get_next_texture(SDL_Surface *surface)
+static SDL_Texture *get_next_texture(SDL_Surface *surface)
 {
 	int next_texture;
 
@@ -2137,7 +2138,7 @@ static void collect_files(const char *path) {
 	}
 }
 
-char **get_all_files_from_args(int argc, char **argv, size_t *out_count)
+static char **get_all_files_from_args(int argc, char **argv, size_t *out_count)
 {
 	for (int i = 0; i < argc; ++i) {
 		collect_files(argv[i]);
@@ -2165,7 +2166,7 @@ static void sdl_drain_events(void)
 	}
 }
 
-bool fill_keypress_queue(void)
+static bool fill_keypress_queue(void)
 {
 	SDL_Event e;
 	bool ret = false;
@@ -2212,7 +2213,7 @@ bool fill_keypress_queue(void)
 	return ret;
 }
 
-bool process_keypress(void)
+static bool process_keypress(void)
 {
 	if (!app_state.gui)
 		return false;
@@ -2492,7 +2493,7 @@ static void process_command_line_args(int argc, char **argv)
 	}
 }
 
-size_t init_image_list(int argc, char **argv)
+static size_t init_image_list(int argc, char **argv)
 {
 	size_t file_count;
 	int arg_count = argc - optind;
@@ -2589,7 +2590,7 @@ static void init_readahead_thread(void)
 		pthread_create(&app_state.readahead_thread, NULL, readahead_thread_func, NULL);
 }
 
-image_info_t *try_render_one_image(void)//image_info_t *last_img)
+static image_info_t *try_render_one_image(void)//image_info_t *last_img)
 {
 	static image_info_t *last_img = NULL;
 	image_info_t *img = NULL;
