@@ -240,7 +240,6 @@ static bool pop(ptr_array* arr, void **out_value)
 	return success;
 }
 
-/*
 // Get a value from the beginning(thread-safe)
 static bool shift(ptr_array* arr, void **out_value)
 {
@@ -254,6 +253,7 @@ static bool shift(ptr_array* arr, void **out_value)
 	return success;
 }
 
+/*
 static bool remove_val(ptr_array* arr, void *val)
 {
 	bool success = false;
@@ -2340,7 +2340,7 @@ static bool process_keypress(void)
 	SDL_Event e;
 	SDL_Event *e3;
 	bool suppress_repeats = false;
-	while (pop(&keypress_queue, (void **)&e3)) {
+	while (shift(&keypress_queue, (void **)&e3)) {
 		memcpy(&e, e3, sizeof(e));
 		free(e3);
 		// The user released a key, they want the repeats to
