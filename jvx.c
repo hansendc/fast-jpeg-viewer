@@ -1048,6 +1048,16 @@ void image_populate_mapping(image_info_t *img)
 	img->state = POPULATED;
 }
 
+// Purely change the metadata to invalid, nothing else:
+static void __image_set_invalid(image_info_t *img)
+{
+	assert_mutex_locked(&img->mutex);
+
+	img->state = INVALID;
+
+	pthread_cond_broadcast(&img->cond);
+}
+
 static int open_and_map_img(image_info_t *img)
 {
 	unsigned char jpeg_buf[2];
@@ -1082,8 +1092,7 @@ static int open_and_map_img(image_info_t *img)
 	}
 	if  (jpeg_buf[0] != 0xFF || jpeg_buf[1] != 0xD8) {
 		log_debug("[DECODE] jpeg is INVALID: %s, magic bytes not found", img->filename);
-		img->state = INVALID;
-		pthread_cond_broadcast(&img->cond);
+		__image_set_invalid(img);
 		close(fd);
 		return -1;
 	}
@@ -1092,7 +1101,7 @@ static int open_and_map_img(image_info_t *img)
 	img->jpeg_size = fd_get_file_size(fd);
 	if (img->jpeg_size == -1) {
 		log_debug("error getting file size: %s", img->filename);
-		img->state = INVALID;
+		__image_set_invalid(img);
 		pthread_cond_broadcast(&img->cond);
 		close(fd);
 	}
@@ -1105,9 +1114,7 @@ static int open_and_map_img(image_info_t *img)
 	if (img->jpeg_buf == MAP_FAILED) {
 		log_debug("mmap failed: %s", strerror(errno));
 		close(fd);
-		// TODO: FIXME: put this state set and broadcast in a helper together
-		img->state = INVALID;
-		pthread_cond_broadcast(&img->cond);
+		__image_set_invalid(img);
 		log_debug2("%s() SET INVALID: %s", __func__, img->filename);
 		return -1;
 	}
@@ -2045,7 +2052,8 @@ static void __invalidate_image(image_info_t *img)
 	// ^ this only frees the mmap() at quit
 	// FIXME: refactoring opportunity??
 	img_zap_file_mapping(img);
-	img->state = INVALID;
+
+	__image_set_invalid(img);
 }
 
 static void invalidate_image(image_info_t *img)
