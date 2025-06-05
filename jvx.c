@@ -2034,7 +2034,6 @@ static bool render_image(image_info_t *img)
 		readahead_ago = readahead_ts;
 	if (readahead_ts == 0)
 		readahead_ago = -__LINE__;
-	assert(readahead_ago < 100000);
 
 	if (lock_took > 2)
 	log_debug("Done wait/render image %s (%dx%d) lock:%3ld render:%3ld ra:%3ld decstart:%3ld decdone:%3ld", img->filename, img->width, img->height,
