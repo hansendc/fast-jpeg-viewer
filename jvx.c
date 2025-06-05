@@ -492,6 +492,32 @@ static size_t get_rss_mb()
 	return (size_t)pages * (size_t)sysconf(_SC_PAGESIZE) >> 20;
 }
 
+static unsigned long get_major_faults()
+{
+	FILE *fp = fopen("/proc/self/stat", "r");
+	if (!fp) {
+		perror("fopen");
+		return 0;
+	}
+
+	unsigned long majflt = 0;
+	// Skip the first 11 fields
+	for (int i = 0; i < 11; ++i) {
+		if (fscanf(fp, "%*s") != 0) {
+			// Keep consuming tokens
+		}
+	}
+
+	// 12th field is major faults
+	if (fscanf(fp, "%lu", &majflt) != 1) {
+		perror("fscanf");
+		majflt = 0;
+	}
+
+	fclose(fp);
+	return majflt;
+}
+
 static void signal_handler(int sig) {
 	(void)sig;
 	quit_flag = 1;
@@ -1429,7 +1455,8 @@ static int decode_jpeg(image_info_t *img)
 
 	uint64_t decode_len_ms = img->decode_done_ts - img->decode_start_ts;
 	if (decode_len_ms > 1000)
-		log_debug("long decode for %s: %ld ms", img->filename, decode_len_ms);
+		log_debug("long decode for %s: %ld ms maj faults: %ld", img->filename, decode_len_ms,
+			  get_major_faults());
 cleanup:
 	//if (dst_buf)
 	//	free(dst_buf);
