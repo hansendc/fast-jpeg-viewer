@@ -252,7 +252,7 @@ static void free_array(ptr_array* arr) {
 enum image_state
 {
 	BRAND_NEW = 0,
-	MAPPED  = 22,
+	POPULATED = 22,
 	DECODED = 33,
 	RECLAIMED = 44,
 	INVALID = 55,
@@ -993,9 +993,6 @@ static void check_mincore(image_info_t *img, unsigned char *jpeg_buf, unsigned l
 	}
 	memset(vec, 0, vec_len);
 
-	//FIXME: Do we need this, readahed() and WILLNEED??
-	//madvise(jpeg_buf, jpeg_size, MADV_WILLNEED);
-
 	uint64_t sum = 0;
 	for (int i = 0; i < jpeg_size; i += sizeof(uint64_t))
 		sum += *(uint64_t *)&jpeg_buf[i];
@@ -1030,6 +1027,27 @@ static size_t fd_get_file_size(int fd)
 	return st.st_size;
 }
 
+void image_populate_mapping(image_info_t *img)
+{
+	assert_mutex_locked(&img->mutex);
+	assert(img->state == BRAND_NEW ||
+	       img->state == RECLAIMED);
+
+	/*
+	 * MADV_WILLNEED will the pages into the page cache but not
+	 * map them. This actually creates the PTEs and maps them.
+	 *
+	 * This is crucial for performance I/O performance because
+	 * the JPEG decoding processes access all over the file
+	 * and does random I/O. This, on the other hand does very
+	 * linear, sequential I/O. It is faster for flash and hard
+	 * drives both.
+	 */
+	madvise(img->jpeg_buf, img->jpeg_size, MADV_POPULATE_READ);
+	memory_footprint_inc(img, img->jpeg_size);
+	img->state = POPULATED;
+}
+
 static int open_and_map_img(image_info_t *img)
 {
 	unsigned char jpeg_buf[2];
@@ -1044,11 +1062,8 @@ static int open_and_map_img(image_info_t *img)
 	}
 
 	if (img->jpeg_buf) {
-		if (img->state == RECLAIMED) {
-			img->state = MAPPED;
-			madvise(img->jpeg_buf, img->jpeg_size, MADV_WILLNEED);
-			memory_footprint_inc(img, img->jpeg_size);
-		}
+		if (img->state == RECLAIMED)
+			image_populate_mapping(img);
 		return 0;
 	}
 
@@ -1084,10 +1099,8 @@ static int open_and_map_img(image_info_t *img)
 
 	assert(img->jpeg_size < 100 * MB);
 	img->jpeg_buf = mmap(NULL, img->jpeg_size, PROT_READ, MAP_PRIVATE
-			//| MAP_POPULATE
 			, fd, 0);
 
-	memory_footprint_inc(img, img->jpeg_size);
 
 	if (img->jpeg_buf == MAP_FAILED) {
 		log_debug("mmap failed: %s", strerror(errno));
@@ -1098,8 +1111,7 @@ static int open_and_map_img(image_info_t *img)
 		log_debug2("%s() SET INVALID: %s", __func__, img->filename);
 		return -1;
 	}
-	madvise(img->jpeg_buf, img->jpeg_size, MADV_WILLNEED);
-	img->state = MAPPED;
+	image_populate_mapping(img);
 	if (0)
 	check_mincore(img, img->jpeg_buf, img->jpeg_size);
 	close(fd);
@@ -1328,7 +1340,7 @@ static int decode_jpeg(image_info_t *img)
 	//
 	// Should we centralize all the state transisions?
 	//
-	// Should something have MADV_WILLNEED'd before this point?
+	// Should something have madvise()'d before this point?
 	if (img->state == RECLAIMED) {
 		// RECLAIMED ->jpeg_buf isn't counted, but a DECODED
 		// one is. Account for the state change:
