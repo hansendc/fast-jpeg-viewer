@@ -1476,7 +1476,11 @@ cleanup:
 static int inc_image_nr(int nr, int by)
 {
 	nr += by;
-	if (nr < 0)
+	/*
+	 * Ensure that huge negative increments will never cause
+	 * 'nr' to remain negative:
+	 */
+	while (nr < 0)
 		nr += app_state.image_count;
 	nr = nr % app_state.image_count;
 	return nr;
