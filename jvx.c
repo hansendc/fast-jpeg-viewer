@@ -284,7 +284,6 @@ typedef struct image
 	int verbose_unlock;
 
 	SDL_Surface *surface;
-	int rendering;
 
 	uint64_t timestamp;
 	uint64_t readahead_ts;
@@ -2018,10 +2017,8 @@ static bool render_image(image_info_t *img)
 	if (!image_ready_to_render(img->state))
 		decode_jpeg(img);
 	img->timestamp = now_ms();
-	img->rendering = 1;
 	uint64_t lock_took = now_ms() - render_start;
 	__render_image(img);
-	img->rendering = 0;
 	unlock_image(img);
 
 	uint64_t render_took = now_ms() - render_start;
