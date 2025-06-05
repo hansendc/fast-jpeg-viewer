@@ -210,23 +210,81 @@ unlock:
 	return success;
 }
 
+static bool __remove_nr(ptr_array* arr, int nr_to_remove, void **out_value)
+{
+	if (nr_to_remove >= arr->size)
+		return false;
+
+	arr->size--;
+	if (out_value) {
+		*out_value = arr->data[nr_to_remove];
+	}
+
+	void **removeme = &arr->data[nr_to_remove];
+	int nr_after = arr->size - nr_to_remove;
+
+	memcpy(removeme, removeme+1, nr_after * sizeof(arr->data[0]));
+
+	return true;
+}
+
 // Pop a value from the end (thread-safe)
-static bool pop(ptr_array* arr, void **out_value) {
+static bool pop(ptr_array* arr, void **out_value)
+{
 	bool success = true;
 	pthread_mutex_lock(&arr->lock);
 
-	if (arr->size == 0) {
-		success = false;
-	} else {
-		arr->size--;
-		if (out_value) {
-			*out_value = arr->data[arr->size];
-		}
+	success = __remove_nr(arr, arr->size-1, out_value);
+
+	pthread_mutex_unlock(&arr->lock);
+	return success;
+}
+
+/*
+// Get a value from the beginning(thread-safe)
+static bool shift(ptr_array* arr, void **out_value)
+{
+	bool success;
+
+	pthread_mutex_lock(&arr->lock);
+
+	success = __remove_nr(arr, 0, out_value);
+
+	pthread_mutex_unlock(&arr->lock);
+	return success;
+}
+
+static bool remove_val(ptr_array* arr, void *val)
+{
+	bool success = false;
+
+	pthread_mutex_lock(&arr->lock);
+
+	for (int i = 0; i < arr->size; i++) {
+		if (arr->data[i] != val)
+			continue;
+
+		success = __remove_nr(arr, i, NULL);
+		break;
 	}
 
 	pthread_mutex_unlock(&arr->lock);
 	return success;
 }
+
+static bool remove_nr(ptr_array* arr, int nr)
+{
+	bool success;
+
+	pthread_mutex_lock(&arr->lock);
+
+	success = __remove_nr(arr, nr, NULL);
+
+	pthread_mutex_unlock(&arr->lock);
+	return success;
+}
+
+*/
 
 // Free the array
 static void free_array(ptr_array* arr) {
