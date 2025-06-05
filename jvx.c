@@ -2357,6 +2357,15 @@ static bool process_keypress(void)
 		break;
 	}
 
+	// These might mean that the app needs to redraw the
+	// screen, like if there was a desktop switch:
+	if (e.type == SDL_WINDOWEVENT)
+		app_state.force_render = true;
+
+	// These happen but don't seem critical to handle:
+	//if (e.type == SDL_MOUSEMOTION)
+	//	app_state.force_render = true;
+
 	bool did_move = false;
 	image_info_t *img = get_future_image(0);
 	if (e.type == SDL_KEYDOWN) {
