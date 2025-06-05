@@ -1494,7 +1494,12 @@ static bool try_free_image_resources(image_info_t *img)
 		if (quit_flag) {
 			img_zap_file_mapping(img);
 		} else {
-			//madvise(img->jpeg_buf, img->jpeg_size, MADV_DONTNEED);
+			/*
+			 * Remove the actual page table entries, but
+			 * leave the VMA. mmap()/munmap() is a lot
+			 * more expensive than this operation:
+			 */
+			madvise(img->jpeg_buf, img->jpeg_size, MADV_DONTNEED);
 		}
 		log_debug3("state: %d decoded ago: %ld", img->state, now_ms() - img->timestamp);
 		ret = true;
