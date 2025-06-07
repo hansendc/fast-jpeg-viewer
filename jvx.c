@@ -253,7 +253,6 @@ static bool shift(ptr_array* arr, void **out_value)
 	return success;
 }
 
-/*
 static bool remove_val(ptr_array* arr, void *val)
 {
 	bool success = false;
@@ -272,6 +271,7 @@ static bool remove_val(ptr_array* arr, void *val)
 	return success;
 }
 
+/*
 static bool remove_nr(ptr_array* arr, int nr)
 {
 	bool success;
@@ -315,6 +315,10 @@ enum image_state
 	RECLAIMED = 44,
 	INVALID = 55,
 };
+
+ptr_array readahead_images;
+ptr_array old_images;
+ptr_array non_resident_images;
 
 static bool image_ready_to_render(enum image_state state)
 {
@@ -1129,6 +1133,10 @@ void image_populate_mapping(image_info_t *img)
 	madvise(img->jpeg_buf, img->jpeg_size, MADV_POPULATE_READ);
 	memory_footprint_inc(img, img->jpeg_size);
 	img->state = POPULATED;
+
+	remove_val(&non_resident_images, img);
+	remove_val(&readahead_images, img);
+	push(&old_images, img);
 }
 
 // Purely change the metadata to invalid, nothing else:
@@ -1137,6 +1145,10 @@ static void __image_set_invalid(image_info_t *img)
 	assert_mutex_locked(&img->mutex);
 
 	img->state = INVALID;
+
+	remove_val(&readahead_images, img);
+	remove_val(&old_images, img);
+	push(&non_resident_images, img);
 
 	pthread_cond_broadcast(&img->cond);
 }
@@ -1192,7 +1204,6 @@ static int open_and_map_img(image_info_t *img)
 	assert(img->jpeg_size < 100 * MB);
 	img->jpeg_buf = mmap(NULL, img->jpeg_size, PROT_READ, MAP_PRIVATE
 			, fd, 0);
-
 
 	if (img->jpeg_buf == MAP_FAILED) {
 		log_debug("mmap failed: %s", strerror(errno));
@@ -1537,6 +1548,11 @@ static bool try_free_image_resources(image_info_t *img)
 	}
 
 	img->state = RECLAIMED;
+
+	remove_val(&readahead_images, img);
+	remove_val(&old_images, img);
+	push(&non_resident_images, img);
+
 	pthread_cond_broadcast(&img->cond);
 	img->readahead_performed = 0;
 
@@ -1584,7 +1600,8 @@ static void __check_memory_footprint(const char *func, int line)
 }
 #define check_memory_footprint() __check_memory_footprint(__func__,__LINE__)
 
-static void maybe_reclaim_images(void)
+/*
+static void old_maybe_reclaim_images(void)
 {
 	int retries = 0;
 	uint64_t memory_footprint_slow = 0;
@@ -1651,6 +1668,81 @@ retry:
 		}
 	}
 }
+*/
+
+static void maybe_reclaim_images(void)
+{
+	int retries = 0;
+	uint64_t memory_footprint_slow = 0;
+	int freed;
+
+retry:
+       	freed = 0;
+
+	for (int i = 0; i < app_state.image_count; i++) {
+		if (memory_footprint() < app_state.memory_limit) {
+			log_debug2("memory footprint OK: %ld MB", memory_footprint()>>20);
+			break;
+		}
+
+		image_info_t *img;
+
+		shift(&old_images, (void *)&img);
+
+		uint64_t f1 = image_memory_footprint(img);
+		check_memory_footprint();
+		int failed = pthread_mutex_trylock(&img->mutex);
+
+		// Sent it to the end of the LRU
+		if (failed) {
+			log_debug2("reclaim failed to acquire lock for %s", img->filename);
+			push(&old_images, &img);
+			continue;
+		}
+		bool freed_one = try_free_image_resources(img);	
+		img->timestamp = 0;
+
+		log_debug1("[RECLAIM] footprint after try free %s %ld global: %ld", img->filename, image_memory_footprint(img), memory_footprint()/MB);
+		if ((img == &app_state.images[app_state.history_tail]) &&
+		    image_memory_footprint(img) == 0) {
+			int new_tail = inc_image_nr(app_state.history_tail, 1);
+			log_debug2("[RECLAIM] success freeing %s, history tail %d=>%d",
+				  img->filename, app_state.history_tail, new_tail);
+			app_state.history_tail = new_tail;
+		}
+
+		unlock_image(img);
+		check_memory_footprint();
+
+		uint64_t f2 = image_memory_footprint(img);
+		log_debug3("oldest image footprint: %ld=>%ld %s %p", f1, f2, img->filename, img->surface);
+
+		freed += freed_one;
+		reclaimed += freed_one;
+		reclaim_tries++;
+
+		if (!i)
+			log_debug2("memory footprint: %ld MB, need to reclaim, so far: %d", memory_footprint()>>20, freed);
+
+		if (freed > 5)
+			break;
+	}
+	if (freed)
+		return;
+	if (memory_footprint() > app_state.memory_limit*2) {
+		log_debug("ERROR: too far over footprint %lld==?%lld > %lld freed: %d retries: %d",
+				memory_footprint_slow>>20,
+				memory_footprint()>>20,
+				app_state.memory_limit*2>>20, freed, retries);
+		if (retries > 5) {
+			exit(1);
+		} else {
+			retries++;
+			goto retry;
+		}
+	}
+}
+
 
 static bool moving_forward(void)
 {
