@@ -2795,10 +2795,11 @@ int main(int argc, char **argv)
 
 		log_debug2("Done changing image %s (%dx%d)", img->filename, img->width, img->height);
 		if (app_state.nr_rendered % 100 == 0) {
-			printf("frame rate: %.1f/s reclaimed: %ld/%ld rss: %ld surfaces: %ld mem: %ld MB\n",
+			printf("frame rate: %.1f/s reclaimed: %ld/%ld rss: %ld majflts: %ld surfaces: %ld mem: %ld MB\n",
 					1.0 * app_state.nr_rendered / ((now_ms() - start_ts) / 1000.0),
 					reclaimed, reclaim_tries,
 					get_rss_mb(),
+					get_major_faults(),
 					surfaces,
 					memory_footprint() >> 20
 					);
