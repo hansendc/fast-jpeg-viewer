@@ -517,7 +517,7 @@ bool atomic_move_first_image(enum image_state old_state,
 	if (!success)
 		goto out;
 
-	success = __push(new_array, &tmp);
+	success = __push(new_array, tmp);
 	// Can not allow failure here:
 	assert(success);
 
