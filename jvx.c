@@ -1849,7 +1849,14 @@ retry:
 		check_memory_footprint();
 		int failed = pthread_mutex_trylock(&img->mutex);
 
-		// Shuffle the image to the end so another can be tried
+		// Put the image back on its old list. This will also
+		// put it at the end so that the next image consumed
+		// from the list will be different.
+ 		if (failed) {
+			log_debug2("[RECLAIM] failed to acquire lock for %s", img->filename);
+			change_image_state(img, state_target);
+ 			continue;
+ 		}
 		if (failed) {
 			log_debug2("reclaim failed to acquire lock for %s", img->filename);
 			move_head_to_tail(&state_arrays[state_target]);
