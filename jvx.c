@@ -2100,7 +2100,7 @@ static void readahead_once(void *arg) {
 	for (int i = 0; i < max_nr_readaheads; i++) {
 		image_info_t *img = get_future_image(i);
 
-		log_debug2("readahead_once() image i:%d img: %p footprint: %ld", i, img, memory_footprint()/MB);
+		log_debug3("readahead_once() image i:%d img: %p footprint: %ld", i, img, memory_footprint()/MB);
 		if (first_img == NULL) {
 			first_img = img;
 		} else if (img == first_img) {
@@ -2148,7 +2148,7 @@ static void *readahead_thread_func(void *arg)
 		while (app_state.need_readahead == 0 && !app_state.stop_readahead_threads) {
 			uint64_t start_wait_ms = now_ms();
 			pthread_cond_wait(&app_state.readahead_queue_cond, &app_state.readahead_queue_mutex);
-			log_debug2("%s() slept: %ld", __func__, now_ms() - start_wait_ms);
+			log_debug3("[READAHEAD] %s() slept: %ld", __func__, now_ms() - start_wait_ms);
 		}
 		pthread_mutex_unlock(&app_state.readahead_queue_mutex);
 
@@ -2178,8 +2178,8 @@ static bool surface_and_texture_match(SDL_Surface *surface,
 	if (ret)
 		return false;
 
-	log_debug2("t_width: %d t_height: %d", t_width, t_height);
-	log_debug2("s_width: %d s_height: %d", surface->w, surface->h);
+	log_debug4("t_width: %d t_height: %d", t_width, t_height);
+	log_debug4("s_width: %d s_height: %d", surface->w, surface->h);
 
 	if (surface->w != t_width)
 		return false;
@@ -2255,13 +2255,13 @@ static void __render_image(image_info_t *img) {
 		return;
 	}
 
-	log_debug2("Rendering image %s (%dx%d)", img->filename, img->width, img->height);
+	log_debug2("[RENDER] Rendering image %s (%dx%d)", img->filename, img->width, img->height);
 
 	//if (app_state.texture)
 	//	SDL_DestroyTexture(app_state.texture);
 
 	SDL_Surface *surface = img->surface;
-	log_debug2("about to render surface: %p (%dx%d)", surface, surface->w, surface->h);
+	log_debug3("[RENDER] about to render surface: %p (%dx%d)", surface, surface->w, surface->h);
 
 	pthread_mutex_lock(&app_state.renderer_mutex);
 	//SDL_Texture *texture = SDL_CreateTexture(app_state.renderer, SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STATIC, img->width, img->height);
