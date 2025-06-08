@@ -1829,13 +1829,21 @@ retry:
 			break;
 		}
 		image_info_t *img;
-		enum image_state state_target = DECODED;
-		if (state_arrays[state_target].size == 0)
-			state_target = POPULATED;
+		enum image_state state_targets[] = { DECODED, POPULATED };
+		enum image_state state_target = -1;
+		bool found_image = false;
+		for (int i = 0; i < ARRAY_SIZE(state_targets); i++) {
+			state_target = state_targets[i];
+			found_image = atomic_move_first_image(state_target, UNDER_RECLAIM, &img);
+			if (found_image)
+				break;
 
-		bool found_image = peek(&state_arrays[state_target], &img);
-		if (!found_image)
-			log_debug("unable to find image to reclaim");
+			log_debug("[RECLAIM] unable to find %s image to reclaim", image_state_name(state_target));
+		}
+		if (!found_image) {
+			log_debug("[RECLAIM] unable to find ANY image to reclaim", state_target);
+			return;
+		}
 
 		uint64_t f1 = image_memory_footprint(img);
 		check_memory_footprint();
