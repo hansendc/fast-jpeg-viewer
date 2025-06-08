@@ -363,10 +363,29 @@ enum image_state
 	QUEUED_FOR_DECODE,
 	DECODING,
 	DECODED,
+	UNDER_RECLAIM,
 	RECLAIMED,
 	INVALID,
 	NR_IMAGE_STATES
 };
+
+const char* image_state_name(enum image_state state)
+{
+	switch (state) {
+	case BRAND_NEW:		return "BRAND_NEW";
+	case POPULATED:		return "POPULATED";
+	case QUEUED_FOR_DECODE:	return "QUEUED_FOR_DECODE";
+	case DECODING:		return "DECODING";
+	case DECODED:		return "DECODED";
+	case UNDER_RECLAIM:	return "UNDER_RECLAIM";
+	case RECLAIMED:		return "RECLAIMED";
+	case INVALID:		return "INVALID";
+	case NR_IMAGE_STATES:	return "NR_IMAGE_STATES";
+	default:		return "UNKNOWN_IMAGE_STATE";
+	}
+}
+//FIXME: neeed BUILD_BUG_ON() to detect if there's ever a new image
+//state.
 
 static bool image_ready_to_render(enum image_state state)
 {
@@ -1778,6 +1797,23 @@ retry:
 }
 */
 
+static void dump_memory_debug(void)
+{
+	log_debug("total images: %4d", app_state.image_count);
+	for (int i = 0; i < NR_IMAGE_STATES; i++) {
+		long footprint = 0;
+		for (int j = 0; j < state_arrays[i].size; j++) {
+			image_info_t *img = state_arrays[i].data[j];
+			footprint += image_memory_footprint(img);
+		}
+		log_debug("images in state %18s(%2d): %4d, total footprint %4ld MB",
+			  image_state_name(i),
+			  i,
+			  state_arrays[i].size,
+			  footprint/MB);
+	}
+}
+
 static void maybe_reclaim_images(void)
 {
 	int retries = 0;
@@ -2600,6 +2636,8 @@ static bool process_keypress(void)
 		} else if (e.key.keysym.sym == SDLK_DELETE) {
 			invalidate_image(img);
 			app_state.force_render = true;
+		} else if (e.key.keysym.sym == SDLK_m) {
+			dump_memory_debug();
 		} else if (e.key.keysym.sym >= SDLK_0 &&
 			 e.key.keysym.sym <= SDLK_9) {
 			int num = e.key.keysym.sym - SDLK_0;
