@@ -1834,6 +1834,10 @@ retry:
 		bool found_image = false;
 		for (int i = 0; i < ARRAY_SIZE(state_targets); i++) {
 			state_target = state_targets[i];
+			// Note: the image should be on UNDER_RECLAIM
+			// for a short time. It should be back on some
+			// other list by the end of the outer loop
+			// iteration.
 			found_image = atomic_move_first_image(state_target, UNDER_RECLAIM, &img);
 			if (found_image)
 				break;
@@ -1857,11 +1861,6 @@ retry:
 			change_image_state(img, state_target);
  			continue;
  		}
-		if (failed) {
-			log_debug2("reclaim failed to acquire lock for %s", img->filename);
-			move_head_to_tail(&state_arrays[state_target]);
-			continue;
-		}
 		bool freed_one = try_free_image_resources(img);	
 		img->timestamp = 0;
 
@@ -1883,6 +1882,11 @@ retry:
 		freed += freed_one;
 		reclaimed += freed_one;
 		reclaim_tries++;
+
+		// Move off UNDER_RECLAIM, back to old state (to the
+		// end of the old state list)
+		if (!freed_one)
+			change_image_state(img, state_target);
 
 		if (!i)
 			log_debug2("memory footprint: %ld MB, need to reclaim, so far: %d", memory_footprint()>>20, freed);
