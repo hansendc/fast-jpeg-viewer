@@ -188,35 +188,50 @@ static void init_array(ptr_array* arr) {
 }
 
 // Push a value to the end (thread-safe)
-static bool push(ptr_array* arr, void *value) {
-	bool success = true;
-	pthread_mutex_lock(&arr->lock);
-
+static bool __push(ptr_array* arr, void *value)
+{
 	if (arr->size == arr->capacity) {
 		size_t new_capacity = arr->capacity ? arr->capacity * 2 : 4;
 		void **new_data = realloc(arr->data, new_capacity * sizeof(void *));
-		if (!new_data) {
-			success = false;
-			goto unlock;
-		}
+		if (!new_data)
+			return false;
 		arr->data = new_data;
 		arr->capacity = new_capacity;
 	}
 
 	arr->data[arr->size++] = value;
 
-unlock:
+	return true;
+}
+
+// Push a value to the end (thread-safe)
+static bool push(ptr_array* arr, void *value)
+{
+	bool success;
+
+	pthread_mutex_lock(&arr->lock);
+	success = __push(arr, value);
 	pthread_mutex_unlock(&arr->lock);
+
 	return success;
 }
 
-static bool __remove_nr(ptr_array* arr, int nr_to_remove, void **out_value)
+static bool __remove_nr(ptr_array* arr, int nr_to_remove, void *_out_value)
 {
 	if (nr_to_remove >= arr->size)
 		return false;
 
 	arr->size--;
-	if (out_value) {
+	if (_out_value) {
+		// This is tricky. Callers want to just do
+		// pop(&list, &my_ptr), and this code writes
+		// 'my_ptr'. The argument is logically a
+		// double pointer. But in order for these
+		// functions to remain generic, they must
+		// take void* to take all pointers. Cast it
+		// over to a (void **) so that the _real_
+		// pointer value can be written:
+		void **out_value = (void **)_out_value;
 		*out_value = arr->data[nr_to_remove];
 	}
 
@@ -229,7 +244,7 @@ static bool __remove_nr(ptr_array* arr, int nr_to_remove, void **out_value)
 }
 
 // Pop a value from the end (thread-safe)
-static bool pop(ptr_array* arr, void **out_value)
+static bool pop(ptr_array* arr, void *out_value)
 {
 	bool success = true;
 	pthread_mutex_lock(&arr->lock);
@@ -238,6 +253,25 @@ static bool pop(ptr_array* arr, void **out_value)
 
 	pthread_mutex_unlock(&arr->lock);
 	return success;
+}
+
+static bool peek_index(ptr_array* arr, int index, void *_out_value)
+{
+	pthread_mutex_lock(&arr->lock);
+
+	if (arr->size == 0)
+		return false;
+
+	void **out_value = (void **)_out_value;
+	*out_value = arr->data[index];
+
+	pthread_mutex_unlock(&arr->lock);
+	return true;
+}
+
+static bool peek(ptr_array* arr, void *_out_value)
+{
+	return peek_index(arr, 0, _out_value);
 }
 
 // Get a value from the beginning(thread-safe)
@@ -269,6 +303,21 @@ static bool remove_val(ptr_array* arr, void *val)
 
 	pthread_mutex_unlock(&arr->lock);
 	return success;
+}
+
+static void move_head_to_tail(ptr_array* arr)
+{
+	void *ptr;
+	bool success;
+
+	pthread_mutex_lock(&arr->lock);
+
+	success = __remove_nr(arr, 0, &ptr);
+	assert(success);
+	success = __push(arr, &ptr);
+	assert(success);
+
+	pthread_mutex_unlock(&arr->lock);
 }
 
 /*
@@ -309,16 +358,15 @@ static void free_array(ptr_array* arr) {
 
 enum image_state
 {
-	BRAND_NEW = 0,
-	POPULATED = 22,
-	DECODED = 33,
-	RECLAIMED = 44,
-	INVALID = 55,
+	BRAND_NEW,
+	POPULATED, // jpeg_buf faulted in
+	QUEUED_FOR_DECODE,
+	DECODING,
+	DECODED,
+	RECLAIMED,
+	INVALID,
+	NR_IMAGE_STATES
 };
-
-ptr_array readahead_images;
-ptr_array old_images;
-ptr_array non_resident_images;
 
 static bool image_ready_to_render(enum image_state state)
 {
@@ -408,6 +456,78 @@ static app_state_t app_state = {
 	.memory_limit = DEFAULT_MEMORY_LIMIT_BYTES,
 };
 
+ptr_array state_arrays[NR_IMAGE_STATES];
+
+void change_image_state(image_info_t *img, enum image_state new_state)
+{
+	enum image_state old_state = img->state;
+	ptr_array *old_array = &state_arrays[old_state];
+	ptr_array *new_array = &state_arrays[new_state];
+
+	remove_val(old_array, img);
+	push(new_array, img);
+
+	img->state = new_state;
+}
+
+void lock_two_state_arrays(enum image_state s1,
+			   enum image_state s2)
+{
+	ptr_array *a1 = &state_arrays[s1];
+	ptr_array *a2 = &state_arrays[s2];
+
+	if (s1 < s2) {
+		pthread_mutex_lock(&a1->lock);
+		pthread_mutex_lock(&a2->lock);
+	} else {
+		pthread_mutex_lock(&a2->lock);
+		pthread_mutex_lock(&a1->lock);
+	}
+}
+
+void unlock_two_state_arrays(enum image_state s1,
+			     enum image_state s2)
+{
+	ptr_array *a1 = &state_arrays[s1];
+	ptr_array *a2 = &state_arrays[s2];
+
+	if (s1 < s2) {
+		pthread_mutex_unlock(&a1->lock);
+		pthread_mutex_unlock(&a2->lock);
+	} else {
+		pthread_mutex_unlock(&a2->lock);
+		pthread_mutex_unlock(&a1->lock);
+	}
+}
+
+
+// Atomically take the first 'old_state' and make it 'new_state'
+bool atomic_move_first_image(enum image_state old_state,
+			     enum image_state new_state,
+			     image_info_t **img)
+{
+	void *tmp;
+
+	lock_two_state_arrays(old_state, new_state);
+
+	ptr_array *old_array = &state_arrays[old_state];
+	ptr_array *new_array = &state_arrays[new_state];
+
+	bool success = __remove_nr(old_array, 0, &tmp);
+	if (!success)
+		goto out;
+
+	success = __push(new_array, &tmp);
+	// Can not allow failure here:
+	assert(success);
+
+	(*img) = tmp;
+	(*img)->state = new_state;
+out:
+	unlock_two_state_arrays(old_state, new_state);
+
+	return success;
+}
 
 static SDL_Surface *__alloc_screen_surface(void)
 {
@@ -1132,11 +1252,7 @@ void image_populate_mapping(image_info_t *img)
 	 */
 	madvise(img->jpeg_buf, img->jpeg_size, MADV_POPULATE_READ);
 	memory_footprint_inc(img, img->jpeg_size);
-	img->state = POPULATED;
-
-	remove_val(&non_resident_images, img);
-	remove_val(&readahead_images, img);
-	push(&old_images, img);
+	change_image_state(img, POPULATED);
 }
 
 // Purely change the metadata to invalid, nothing else:
@@ -1144,11 +1260,7 @@ static void __image_set_invalid(image_info_t *img)
 {
 	assert_mutex_locked(&img->mutex);
 
-	img->state = INVALID;
-
-	remove_val(&readahead_images, img);
-	remove_val(&old_images, img);
-	push(&non_resident_images, img);
+	change_image_state(img, INVALID);
 
 	pthread_cond_broadcast(&img->cond);
 }
@@ -1447,7 +1559,7 @@ static int decode_jpeg(image_info_t *img)
 		// one is. Account for the state change:
 		memory_footprint_inc(img, img->jpeg_size);
 	}
-	img->state = DECODED;
+	change_image_state(img, DECODED);
 	check_img_footprint(img);
 
 	img->surface = NULL;
@@ -1547,11 +1659,7 @@ static bool try_free_image_resources(image_info_t *img)
 		ret = true;
 	}
 
-	img->state = RECLAIMED;
-
-	remove_val(&readahead_images, img);
-	remove_val(&old_images, img);
-	push(&non_resident_images, img);
+	change_image_state(img, RECLAIMED);
 
 	pthread_cond_broadcast(&img->cond);
 	img->readahead_performed = 0;
@@ -1684,19 +1792,23 @@ retry:
 			log_debug2("memory footprint OK: %ld MB", memory_footprint()>>20);
 			break;
 		}
-
 		image_info_t *img;
+		enum image_state state_target = DECODED;
+		if (state_arrays[state_target].size == 0)
+			state_target = POPULATED;
 
-		shift(&old_images, (void *)&img);
+		bool found_image = peek(&state_arrays[state_target], &img);
+		if (!found_image)
+			log_debug("unable to find image to reclaim");
 
 		uint64_t f1 = image_memory_footprint(img);
 		check_memory_footprint();
 		int failed = pthread_mutex_trylock(&img->mutex);
 
-		// Sent it to the end of the LRU
+		// Shuffle the image to the end so another can be tried
 		if (failed) {
 			log_debug2("reclaim failed to acquire lock for %s", img->filename);
-			push(&old_images, &img);
+			move_head_to_tail(&state_arrays[state_target]);
 			continue;
 		}
 		bool freed_one = try_free_image_resources(img);	
@@ -1743,7 +1855,7 @@ retry:
 	}
 }
 
-
+/*
 static bool moving_forward(void)
 {
 	return app_state.last_delta > 0;
@@ -1752,9 +1864,11 @@ static bool moving_backward(void)
 {
 	return app_state.last_delta < 0;
 }
-
+*/
 static int decode_queue_size(void)
 {
+	return state_arrays[QUEUED_FOR_DECODE].size;
+/*
 	int ret;
 	if (moving_forward()) {
 		ret = app_state.decode_head - app_state.decode_tail;
@@ -1766,9 +1880,11 @@ static int decode_queue_size(void)
 	log_debug5("decode_queue_size(): %d h:%d t:%d", ret, app_state.decode_head, app_state.decode_tail);
 	dassert(ret >= 0);
 	return ret;
+	*/
 }
 
-static void clear_decode_queue(char *reason)
+/*
+static void old_clear_decode_queue(char *reason)
 {
 	pthread_mutex_lock(&app_state.decode_queue_mutex);
 	app_state.decode_head  = app_state.decode_tail;
@@ -1780,32 +1896,41 @@ static void clear_decode_queue(char *reason)
 	pthread_cond_broadcast(&app_state.decode_queue_cond);
 	log_debug2("cleared decode queue reason: %s", reason);
 }
+*/
+
+static void clear_decode_queue(char *reason)
+{
+	while (state_arrays[QUEUED_FOR_DECODE].size) {
+		image_info_t *img;
+		peek(&state_arrays[QUEUED_FOR_DECODE], &img);
+
+		change_image_state(img, POPULATED);
+	}
+
+	log_debug2("cleared decode queue reason: %s", reason);
+}
 
 static void *decode_thread_func(void *arg)
 {
 	(void)arg;
 
 	while (!app_state.stop_decode_threads) {
-		//log_debug("taking &app_state.decode_queue_mutex");
+		log_debug4("[DECODE-T] taking &app_state.decode_queue_mutex");
 
 		pthread_mutex_lock(&app_state.decode_queue_mutex);
+
 		while (decode_queue_size() == 0 && !app_state.stop_decode_threads) {
+			log_debug4("[DECODE-T] thread waiting");
 			pthread_cond_wait(&app_state.decode_queue_cond, &app_state.decode_queue_mutex);
-			log_debug4("[DECODE] thread woke up");
+			log_debug4("[DECODE-T] thread woke up");
 		}
 		image_info_t *img = NULL;
-		if (decode_queue_size() > 0) {
-			img = &app_state.images[app_state.decode_tail];
-			int next = inc_image_nr(app_state.decode_tail, app_state.last_delta);
-			log_debug3("[DECODE] moving app_state.decode_tail: %d=>%d decode_queue_size(): %d",
-				  app_state.decode_tail, next, decode_queue_size());
-			app_state.decode_tail = next;
-			decode_queue_size(); // <- has an assert
-		}
+		bool success = atomic_move_first_image(QUEUED_FOR_DECODE, DECODING, &img);
+
 		pthread_mutex_unlock(&app_state.decode_queue_mutex);
 		log_debug4("released &app_state.decode_queue_mutex");
 
-		if (img) {
+		if (success) {
 			log_debug2("[DECODE] considering %s decode_queue_size(): %d", img->filename, decode_queue_size());
 
 			lock_image(img);
@@ -1836,7 +1961,32 @@ static void *decode_thread_func(void *arg)
 	return NULL;
 }
 
-static bool enqueue_decode(void)
+static bool enqueue_decode(image_info_t *img)
+{
+	bool ret;
+	pthread_mutex_lock(&app_state.decode_queue_mutex);
+
+	if (img->state == DECODED) {
+		log_debug("[READAHEAD] img %d already decoded", img);
+		ret = false;
+	} else {
+		change_image_state(img, QUEUED_FOR_DECODE);
+		ret = true;
+	}
+	log_debug1("[READAHEAD] enqueued %s", img->filename);
+	decode_queue_size(); // <- has an assert
+
+	pthread_mutex_unlock(&app_state.decode_queue_mutex);
+
+	if (ret == true) {
+		//pthread_cond_signal(&app_state.decode_queue_cond);
+		pthread_cond_broadcast(&app_state.decode_queue_cond);
+	}
+	return ret;
+}
+
+/*
+static bool old_enqueue_decode(void)
 {
 	bool ret;
 	pthread_mutex_lock(&app_state.decode_queue_mutex);
@@ -1865,6 +2015,7 @@ static bool enqueue_decode(void)
 	}
 	return ret;
 }
+*/
 
 /*
  * Takes ->last_delta into account, so may move up or down and by more
@@ -1894,8 +2045,7 @@ static image_info_t *get_future_image(int nr_to_advance)
 static void img_try_readahead(image_info_t *img)
 {
 	// Don't do readahead if it's already decoded in memory
-	if ((img->state == DECODED) ||
-	    (img->state == INVALID)) {
+	if (img->state == INVALID) {
 		img->readahead_ts = -__LINE__;
 		return;
 	}
@@ -1930,7 +2080,7 @@ static void img_try_readahead(image_info_t *img)
 	unlock_image(img);
 
 	log_debug2("[READAHEAD] opened and mapped %s", img->filename);
-	enqueue_decode();
+	enqueue_decode(img);
 	log_debug2("[READAHEAD] enqueue decode for %s", img->filename); 
 out:
 	close(fd);
@@ -1949,9 +2099,10 @@ static void readahead_once(void *arg) {
 	log_debug4("readahead_once()");
 	for (int i = 0; i < max_nr_readaheads; i++) {
 		image_info_t *img = get_future_image(i);
+
 		log_debug2("readahead_once() image i:%d img: %p footprint: %ld", i, img, memory_footprint()/MB);
 		if (first_img == NULL) {
-			first_img = get_future_image(0);
+			first_img = img;
 		} else if (img == first_img) {
 			// did the loop wrap all the way around?
 			// if so, no reason to keep doing readahead
@@ -1959,36 +2110,6 @@ static void readahead_once(void *arg) {
 			break;
 		}
 		bool need_reclaim = (memory_footprint() > app_state.memory_limit);
-
-		if (get_future_image_slot(i+1) == app_state.history_tail) {
-			int htlen;
-			if (app_state.current_index >= app_state.history_tail)
-				htlen = app_state.current_index - app_state.history_tail;
-			else
-				htlen = app_state.current_index - (app_state.history_tail - app_state.image_count);
-			log_debug1("hit tail, ht: %d htlen: %d ci: %d dt: %d dh: %d size: %d",
-				  app_state.history_tail,
-				  htlen,
-				  app_state.current_index,
-				  app_state.decode_tail,
-				  app_state.decode_head,
-				  decode_queue_size()
-				  );
-			//break;
-			//
-			// Not sure about this, but here's the logic:
-			//
-			// If the readahead hits the history tail then _most_ of the
-			// images are likely in memory. Reset the reclaim spot to where
-			// reclaim is the least likely to impact viewing: right behind
-			// the current image.
-			//
-			// This is probably mostly academic. You have to have _just_
-			// the right cache size for this to be a problem.
-			//
-			// It might need more of a "streaming" mode that it goes into.
-			app_state.history_tail = inc_image_nr(app_state.current_index, -max_nr_readaheads);
-		}
 
 		img_try_readahead(img);
 		if (need_reclaim) {
@@ -2027,7 +2148,7 @@ static void *readahead_thread_func(void *arg)
 		while (app_state.need_readahead == 0 && !app_state.stop_readahead_threads) {
 			uint64_t start_wait_ms = now_ms();
 			pthread_cond_wait(&app_state.readahead_queue_cond, &app_state.readahead_queue_mutex);
-			log_debug3("%s() slept: %ld", __func__, now_ms() - start_wait_ms);
+			log_debug2("%s() slept: %ld", __func__, now_ms() - start_wait_ms);
 		}
 		pthread_mutex_unlock(&app_state.readahead_queue_mutex);
 
@@ -2914,8 +3035,11 @@ int main(int argc, char **argv)
 	pthread_cond_broadcast(&app_state.decode_queue_cond);
 	pthread_cond_broadcast(&app_state.readahead_queue_cond);
 	if (!DISABLE_THREADING) {
-		for (int i = 0; i < app_state.num_decode_threads; ++i)
+		for (int i = 0; i < app_state.num_decode_threads; ++i) {
+			log_debug("joining decode thread %d", i);
 			pthread_join(app_state.decode_threads[i], NULL);
+		}
+		log_debug("joining readahead thread");
 		pthread_join(app_state.readahead_thread, NULL);
 	}
 	log_debug("all threads joined??");
