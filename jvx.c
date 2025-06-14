@@ -305,6 +305,7 @@ static bool remove_val(ptr_array* arr, void *val)
 	return success;
 }
 
+/*
 static void move_head_to_tail(ptr_array* arr)
 {
 	void *ptr;
@@ -320,7 +321,6 @@ static void move_head_to_tail(ptr_array* arr)
 	pthread_mutex_unlock(&arr->lock);
 }
 
-/*
 static bool remove_nr(ptr_array* arr, int nr)
 {
 	bool success;
