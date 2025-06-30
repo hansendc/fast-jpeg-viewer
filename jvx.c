@@ -1219,9 +1219,11 @@ static void check_mincore(image_info_t *img, unsigned char *jpeg_buf, unsigned l
 	}
 	memset(vec, 0, vec_len);
 
+	/*
 	uint64_t sum = 0;
 	for (int i = 0; i < jpeg_size; i += sizeof(uint64_t))
 		sum += *(uint64_t *)&jpeg_buf[i];
+	*/
 
 	ret2 = mincore(jpeg_buf, jpeg_size, vec);
 	if (ret2)
