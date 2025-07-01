@@ -2546,6 +2546,44 @@ static void sdl_drain_events(void)
 	}
 }
 
+#include <SDL2/SDL.h>
+#include <stdio.h>
+
+void print_sdl_event_type(const SDL_Event *event) {
+	if (!event) return;
+
+	switch (event->type) {
+		case SDL_QUIT:
+			log_debug2("Event: SDL_QUIT");
+			break;
+		case SDL_KEYDOWN:
+			log_debug2("Event: SDL_KEYDOWN (key: %s) type: %d/%d/%d", SDL_GetKeyName(event->key.keysym.sym), event->type,
+		     			SDL_KEYDOWN, SDL_KEYDOWN== event->type);
+			break;
+		case SDL_KEYUP:
+			log_debug2("Event: SDL_KEYUP (key: %s)", SDL_GetKeyName(event->key.keysym.sym));
+			break;
+		case SDL_MOUSEMOTION:
+			//log_debug("Event: SDL_MOUSEMOTION (x: %d, y: %d)", event->motion.x, event->motion.y);
+			break;
+		case SDL_MOUSEBUTTONDOWN:
+			log_debug2("Event: SDL_MOUSEBUTTONDOWN (button: %d)", event->button.button);
+			break;
+		case SDL_MOUSEBUTTONUP:
+			log_debug2("Event: SDL_MOUSEBUTTONUP (button: %d)", event->button.button);
+			break;
+		case SDL_MOUSEWHEEL:
+			log_debug2("Event: SDL_MOUSEWHEEL (x: %d, y: %d)", event->wheel.x, event->wheel.y);
+			break;
+		case SDL_WINDOWEVENT:
+			//printf("Event: SDL_WINDOWEVENT (window event: %d)", event->window.event);
+			break;
+		default:
+			log_debug4("Event: Unknown type (%d)\n", event->type);
+			break;
+	}
+}
+
 static bool fill_keypress_queue(void)
 {
 	SDL_Event e;
@@ -2573,6 +2611,7 @@ static bool fill_keypress_queue(void)
 
 		SDL_Event *e2 = malloc(sizeof(e));
 		memcpy(e2, &e, sizeof(e));
+		print_sdl_event_type(&e);
 
 		// Quit immediately if seen:
 		if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_q)) {
@@ -2629,7 +2668,9 @@ static bool process_keypress(void)
 
 	// These might mean that the app needs to redraw the
 	// screen, like if there was a desktop switch:
-	if (e.type == SDL_WINDOWEVENT)
+	if ((e.type == SDL_WINDOWEVENT) ||
+	    (e.type == SDL_MOUSEBUTTONDOWN) ||
+	    (e.type == SDL_MOUSEBUTTONUP))
 		app_state.force_render = true;
 
 	// These happen but don't seem critical to handle:
