@@ -2698,6 +2698,9 @@ static bool process_keypress(void)
 		} else if (e.key.keysym.sym == SDLK_DELETE) {
 			invalidate_image(img);
 			app_state.force_render = true;
+		} else if (e.key.keysym.sym == SDLK_UP) {
+			app_state.memory_limit *= 1.1;
+			log_debug1("new memory limit: %lld MB", app_state.memory_limit);
 		} else if (e.key.keysym.sym == SDLK_m) {
 			dump_memory_debug();
 		} else if (e.key.keysym.sym >= SDLK_0 &&
