@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 // jpeg_viewer_multithreaded.c
 // Compile with: gcc jpeg_viewer_multithreaded.c -o jpeg_viewer -lturbojpeg -lSDL2 -lpthread
 
