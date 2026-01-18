@@ -10,10 +10,10 @@ your keyboard repeat rate will be the bottleneck, not jvx.
 
 	jvx <files or directories>
 
-	--memory-footprint=<bytes> - Limtis the memory being used to cache
-                                     images, both the JPEG itself (in the
-                                     OS page cache) and the decoded pixels.
-                                     Defaults to 1GB.
+	--memory-footprint=<bytes> - Limits the memory being used to cache
+				     images, both the JPEG itself (in the
+				     OS page cache) and the decoded pixels.
+				     Defaults to 1GB.
 
 ## Keyboard Bindings
 
