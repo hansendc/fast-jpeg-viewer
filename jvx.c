@@ -475,6 +475,11 @@ static app_state_t app_state = {
 	.memory_limit = DEFAULT_MEMORY_LIMIT_BYTES,
 };
 
+const char *image_state_str(struct image *img)
+{
+	return image_state_name(img->state);
+}
+
 ptr_array state_arrays[NR_IMAGE_STATES];
 
 void change_image_state(image_info_t *img, enum image_state new_state)
@@ -1135,7 +1140,7 @@ static SDL_Surface *__create_image_surface(image_info_t *img, unsigned char *pix
 	blank_surface(screen_surface);
 
 	size_t rss_after = get_rss_mb();
-	if (rss_after > 20000) {
+	if (rss_after > 30000) {
 		log_debug("Rss too large: %ld", rss_after);
 		exit(23);
 	}
@@ -1583,6 +1588,9 @@ static int decode_jpeg(image_info_t *img)
 	change_image_state(img, DECODED);
 	check_img_footprint(img);
 
+	log_debug1("[DECODE] before surface NULL: %s (%dx%d) surface: %p state: %s",
+			img->filename, img->width, img->height, img->surface,
+			image_state_str(img));
 	img->surface = NULL;
 	check_img_footprint(img);
 	img->surface = __create_image_surface(img, dst_buf);
@@ -1859,7 +1867,7 @@ retry:
 		// put it at the end so that the next image consumed
 		// from the list will be different.
  		if (failed) {
-			log_debug2("[RECLAIM] failed to acquire lock for %s", img->filename);
+			log_debug3("[RECLAIM] failed to acquire lock for %s", img->filename);
 			change_image_state(img, state_target);
  			continue;
  		}
@@ -2170,7 +2178,9 @@ static void readahead_once(void *arg) {
 
 		img_try_readahead(img);
 		if (need_reclaim) {
-			log_debug2("[READAHEAD] over memory limit, clearing and reclaiming: %ld", memory_footprint()/MB);
+			log_debug2("[READAHEAD] over memory limit, clearing and reclaiming: %ld > %ld",
+				   memory_footprint()/MB,
+				   app_state.memory_limit/MB);
 			maybe_reclaim_images();
 			//clear_decode_queue("readahead hit mem limit");
 		}
@@ -2916,7 +2926,7 @@ static void process_command_line_args(int argc, char **argv)
 		case 'r':
 			break;
 		case 'm':
-			app_state.memory_limit = strtoull(optarg, NULL, 10);
+			app_state.memory_limit = strtoull(optarg, NULL, 10) * MB;
 			break;
 		case 's':
 			app_state.slideshow_loop = true;
