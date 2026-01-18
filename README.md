@@ -78,4 +78,25 @@ simple and means that there is no complexity from parsing or shell escaping.
 			--action2="{}"	\
 			*.jpg
 
- 
+## History
+
+### Inspiration
+
+I've used [feh](https://feh.finalrewind.org/) for many years. jvx is very much
+inspired by feh. But feh can only view an image or two per second. Now that I
+have a camera that shoots 30 fps, I can easily shoot 10,000+ JPEGs a day. I
+don't want to spend 5,000 seconds looking through those.
+
+I first tried to make feh faster by parallelizing image decoding. But I ended
+up with lots of crashes and concluded that the "imlib2" that it uses is not
+thread safe and that it's rather deeply integrated with feh. I decided to start
+from scratch.
+
+### Starting Over
+
+I tried vibe coding a replacement. It's not *that* much code, so I tried having
+ChatGPT generate the entire program. It did a pretty respectable skeleton,
+especially handling the GUI and JPEG decoder code. But it did have lots of bugs
+and as I made the prompt more complicated, it started losing context and I
+got in a viscious circle, so I moved away from having the entire .c file
+generated and starting doing it the old fashioned way.
