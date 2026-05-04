@@ -2487,53 +2487,122 @@ out:
 	return render_ok;
 }
 
-#define MAX_FD 20
+#include <dirent.h>
+#include <limits.h>
 
-static char **file_list = NULL;
-static size_t file_count = 0;
-static size_t file_capacity = 0;
+static char **file_list;
+static size_t file_count;
+static size_t file_capacity;
 
-static void add_file(const char *path) {
-	if (file_count == file_capacity) {
-		file_capacity = file_capacity ? file_capacity * 2 : 64;
-		file_list = realloc(file_list, file_capacity * sizeof(char *));
-		if (!file_list) {
-			perror("realloc");
-			exit(1);
-		}
+static void list_grow(void)
+{
+	size_t cap = file_capacity ? file_capacity * 2 : 1024;
+	char **p = realloc(file_list, cap * sizeof(*p));
+
+	if (!p) {
+		perror("realloc");
+		exit(1);
 	}
+	file_list = p;
+	file_capacity = cap;
+}
+
+static void list_add(const char *path)
+{
+	if (file_count == file_capacity)
+		list_grow();
 	file_list[file_count++] = strdup(path);
 }
 
-static int visit(const char *fpath, const struct stat *sb, int typeflag, struct FTW *ftwbuf) {
-	if (typeflag == FTW_F) {
-		add_file(fpath);
-	}
+static bool is_dot_entry(const char *name)
+{
+	if (name[0] != '.')
+		return false;
+	if (name[1] == '\0')
+		return true;
+	return name[1] == '.' && name[2] == '\0';
+}
+
+static int join_path(char *buf, size_t len, const char *dir, const char *name)
+{
+	int n = snprintf(buf, len, "%s/%s", dir, name);
+
+	if (n < 0 || (size_t)n >= len)
+		return -1;
 	return 0;
 }
 
-static void collect_files(const char *path) {
+static unsigned char resolve_type(const char *path, unsigned char hint)
+{
 	struct stat st;
-	if (stat(path, &st) != 0) {
+
+	if (hint != DT_UNKNOWN)
+		return hint;
+	if (lstat(path, &st) != 0)
+		return DT_UNKNOWN;
+	if (S_ISREG(st.st_mode))
+		return DT_REG;
+	if (S_ISDIR(st.st_mode))
+		return DT_DIR;
+	return DT_LNK; /* "other" — caller will skip */
+}
+
+static void walk_dir(const char *dir)
+{
+	char path[PATH_MAX];
+	struct dirent *e;
+	DIR *d = opendir(dir);
+
+	if (!d) {
+		perror(dir);
+		return;
+	}
+	while ((e = readdir(d)) != NULL) {
+		unsigned char type;
+
+		if (is_dot_entry(e->d_name))
+			continue;
+		if (join_path(path, sizeof(path), dir, e->d_name))
+			continue;
+
+		type = resolve_type(path, e->d_type);
+		if (type == DT_REG)
+			list_add(path);
+		else if (type == DT_DIR)
+			walk_dir(path);
+	}
+	closedir(d);
+}
+
+static void collect_files(const char *path)
+{
+	struct stat st;
+
+	if (lstat(path, &st) != 0) {
 		perror(path);
 		return;
 	}
+	if (S_ISDIR(st.st_mode))
+		walk_dir(path);
+	else if (S_ISREG(st.st_mode))
+		list_add(path);
+}
 
-	if (S_ISDIR(st.st_mode)) {
-		if (nftw(path, visit, MAX_FD, FTW_PHYS) == -1) {
-			perror("nftw");
-		}
-	} else if (S_ISREG(st.st_mode)) {
-		add_file(path);
-	}
+static int cmp_filename(const void *a, const void *b)
+{
+	return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static void sort_filenames(char **names, size_t n)
+{
+	qsort(names, n, sizeof(*names), cmp_filename);
 }
 
 static char **get_all_files_from_args(int argc, char **argv, size_t *out_count)
 {
-	for (int i = 0; i < argc; ++i) {
+	for (int i = 0; i < argc; i++)
 		collect_files(argv[i]);
-	}
-
+	sort_filenames(file_list, file_count);
 	*out_count = file_count;
 	return file_list;
 }
@@ -2881,7 +2950,7 @@ static void *dave_calloc(size_t nmemb, size_t size)
 static void *dave_realloc(void *ptr, size_t size)
 {
 	void *ret = realloc(ptr, size);
-	log_debug("%s() ptr: %p size: %ld old: %p new: %p", __func__, ptr, size, ptr, ret);
+	log_debug("%s() size: %ld new: %p", __func__, size, ret);
 	return ret;
 }
 
